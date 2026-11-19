@@ -2,7 +2,7 @@ name: Release
 
 # Builds an installer and a portable download for every platform from the tagged source:
 # Windows (setup exe and portable zip, x64 and ARM64), Linux (install.sh tarball and
-# portable tarball) and macOS (disk image and portable zip, Apple silicon and Intel), then attaches them all to the GitHub release for that tag.
+# portable tarball), macOS (disk image and portable zip, Apple silicon and Intel) and Android (an APK for 64-bit ARM phones), then attaches them all to the GitHub release for that tag.
 # Releases are written as drafts (with notes) and published here only once every
 # file is attached, so the app's updater, which reads the latest published release,
 # never sees one without them. If no release exists yet, one is created as a draft
@@ -202,9 +202,81 @@ jobs:
             out/bitchord-portable-${{ env.VERSION }}-macos-x86_64.zip
           if-no-files-found: error
 
+  android:
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_NDK_VERSION: 30.0.16248370
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+
+      # bindgen (rquickjs's Android bindings) needs libclang.
+      - name: Install libclang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev
+          echo "LIBCLANG_PATH=$(llvm-config --libdir 2>/dev/null || dirname "$(find /usr/lib -name 'libclang*.so*' | head -1)")" >> "$GITHUB_ENV"
+
+      - name: Install the Android NDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$ANDROID_NDK_VERSION" "platforms;android-36" "build-tools;36.1.0"
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked --version 4.1.2
+
+      - name: Check versions match
+        run: |
+          cargo_ver=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          apk_ver=$(grep -m1 'versionName' android/app/build.gradle.kts | cut -d'"' -f2)
+          echo "Cargo.toml $cargo_ver, android $apk_ver"
+          [ "$cargo_ver" = "$apk_ver" ] || { echo "version mismatch"; exit 1; }
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$cargo_ver" ]; then
+            echo "tag $GITHUB_REF_NAME does not match v$cargo_ver"; exit 1
+          fi
+          echo "VERSION=$cargo_ver" >> "$GITHUB_ENV"
+
+      # Signed with the project's key when the four secrets exist; otherwise with the
+      # debug key (installs, but a later build can't update it).
+      - name: Build the APK
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_B64" ]; then
+            echo "$ANDROID_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            export ANDROID_KEYSTORE_FILE="$RUNNER_TEMP/release.keystore"
+          else
+            echo "::warning::no signing key: the APK is signed with the debug key"
+          fi
+          sh android/build.sh release
+
+      - name: Name the APK
+        run: |
+          mkdir -p out
+          cp android/app/build/outputs/apk/release/app-release.apk "out/bitchord-$VERSION-android-arm64.apk"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: android
+          path: out/bitchord-${{ env.VERSION }}-android-arm64.apk
+          if-no-files-found: error
+
   attach:
     if: github.ref_type == 'tag'
-    needs: [windows, linux, macos]
+    needs: [windows, linux, macos, android]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v5

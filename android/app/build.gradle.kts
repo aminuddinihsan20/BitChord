@@ -19,9 +19,26 @@ android {
         }
     }
 
+    // A release is signed with the project's key when CI (or you) provide it: the key's file
+    // and passwords in ANDROID_KEYSTORE_FILE, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and
+    // ANDROID_KEY_PASSWORD. Without them it is signed with the debug key, which installs fine
+    // but can't update an app signed with another key.
+    val keystore = System.getenv("ANDROID_KEYSTORE_FILE")?.takeIf { it.isNotEmpty() && file(it).isFile }
+    signingConfigs {
+        if (keystore != null) {
+            create("release") {
+                storeFile = file(keystore)
+                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = if (keystore != null) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
         }
     }
 
