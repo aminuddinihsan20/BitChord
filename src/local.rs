@@ -88,6 +88,27 @@ fn track_of(f: &File) -> Track {
     }
 }
 
+/// An album across all the folders.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AlbumInfo {
+    /// Stands for the album in addresses (see [`album_key`]).
+    pub key: String,
+    pub name: String,
+    pub artist: String,
+    pub songs: usize,
+    /// The id of one of its songs, to take a name-matched look from.
+    pub first_song: String,
+}
+
+/// An album is its name and its artist, ignoring case.
+pub fn album_key(album: &str, artist: &str) -> String {
+    format!("{}\u{1f}{}", album.trim().to_lowercase(), artist.trim().to_lowercase())
+}
+
+fn sort_key(f: &File) -> (String, String, String) {
+    (f.artist.to_lowercase(), f.album.to_lowercase(), f.title.to_lowercase())
+}
+
 impl Library {
     fn add(&mut self, uri: &str, label: &str) -> bool {
         if self.folders.iter().any(|f| f.uri == uri) {
@@ -108,7 +129,36 @@ impl Library {
             .map(|f| File { uri: f.uri.clone(), title: f.title.clone(), artist: f.artist.clone(), album: f.album.clone(), duration_ms: f.duration_ms })
             .collect();
         // By artist, album, then title: a folder reads like a shelf.
-        folder.files.sort_by_cached_key(|f| (f.artist.to_lowercase(), f.album.to_lowercase(), f.title.to_lowercase()));
+        folder.files.sort_by_cached_key(sort_key);
+    }
+
+    /// Every folder's songs as one list, by artist, album and title.
+    fn all_tracks(&self) -> Vec<Track> {
+        let mut files: Vec<&File> = self.folders.iter().flat_map(|f| f.files.iter()).collect();
+        files.sort_by_cached_key(|f| sort_key(f));
+        files.into_iter().map(track_of).collect()
+    }
+
+    /// The albums across all folders: songs with the same album name and artist are one
+    /// album, wherever they are kept. Songs without an album belong to none.
+    fn albums(&self) -> Vec<AlbumInfo> {
+        let mut found: Vec<AlbumInfo> = Vec::new();
+        for f in self.folders.iter().flat_map(|f| f.files.iter()).filter(|f| !f.album.is_empty()) {
+            let key = album_key(&f.album, &f.artist);
+            match found.iter_mut().find(|a| a.key == key) {
+                Some(a) => a.songs += 1,
+                None => found.push(AlbumInfo { key, name: f.album.clone(), artist: f.artist.clone(), songs: 1, first_song: song_id(&f.uri) }),
+            }
+        }
+        found.sort_by_cached_key(|a| (a.artist.to_lowercase(), a.name.to_lowercase()));
+        found
+    }
+
+    /// One album's songs, in track order as the files sort.
+    fn album_tracks(&self, key: &str) -> Vec<Track> {
+        let mut files: Vec<&File> = self.folders.iter().flat_map(|f| f.files.iter()).filter(|f| !f.album.is_empty() && album_key(&f.album, &f.artist) == key).collect();
+        files.sort_by_cached_key(|f| f.title.to_lowercase());
+        files.into_iter().map(track_of).collect()
     }
 
     fn save(&self) {
@@ -139,6 +189,19 @@ pub fn folders() -> Vec<FolderInfo> {
 pub fn tracks(folder_uri: &str) -> Vec<Track> {
     let lib = LIBRARY.read().unwrap_or_else(|e| e.into_inner());
     lib.folders.iter().find(|f| f.uri == folder_uri).map(|f| f.files.iter().map(track_of).collect()).unwrap_or_default()
+}
+
+/// All the songs of every added folder, as one list.
+pub fn all_tracks() -> Vec<Track> {
+    LIBRARY.read().unwrap_or_else(|e| e.into_inner()).all_tracks()
+}
+
+pub fn albums() -> Vec<AlbumInfo> {
+    LIBRARY.read().unwrap_or_else(|e| e.into_inner()).albums()
+}
+
+pub fn album_tracks(key: &str) -> Vec<Track> {
+    LIBRARY.read().unwrap_or_else(|e| e.into_inner()).album_tracks(key)
 }
 
 /// The name of a folder, for headings.
@@ -200,6 +263,45 @@ mod tests {
 
     fn found(uri: &str, title: &str, artist: &str) -> LocalFile {
         LocalFile { uri: uri.into(), title: title.into(), artist: artist.into(), album: String::new(), duration_ms: 200_000, size: 1 }
+    }
+
+    fn lib_with_two_folders() -> Library {
+        let mut lib = Library::default();
+        lib.add("content://t/jp", "primary:Music/Japanese");
+        lib.add("content://t/en", "primary:Music/English");
+        let song = |uri: &str, title: &str, artist: &str, album: &str| LocalFile { uri: uri.into(), title: title.into(), artist: artist.into(), album: album.into(), duration_ms: 1000, size: 1 };
+        lib.set_files("content://t/jp", &[song("jp1", "Tabun", "YOASOBI", "THE BOOK"), song("jp2", "Yoru ni Kakeru", "YOASOBI", "THE BOOK"), song("jp3", "Single", "Aimer", "")]);
+        lib.set_files("content://t/en", &[song("en1", "Hello", "Adele", "25"), song("en2", "Easy On Me", "Adele", "30"), song("en3", "Other", "X", "THE BOOK")]);
+        lib
+    }
+
+    #[test]
+    fn every_folders_songs_are_listed_together() {
+        let lib = lib_with_two_folders();
+        let titles: Vec<String> = lib.all_tracks().into_iter().map(|t| t.title).collect();
+        assert_eq!(titles.len(), 6);
+        assert_eq!(titles, ["Hello", "Easy On Me", "Single", "Other", "Tabun", "Yoru ni Kakeru"], "Adele (25, 30), Aimer, X, YOASOBI");
+    }
+
+    #[test]
+    fn albums_gather_songs_across_folders_by_name_and_artist() {
+        let lib = lib_with_two_folders();
+        let albums = lib.albums();
+        let names: Vec<(&str, &str, usize)> = albums.iter().map(|a| (a.name.as_str(), a.artist.as_str(), a.songs)).collect();
+        assert!(names.contains(&("THE BOOK", "YOASOBI", 2)));
+        assert!(names.contains(&("25", "Adele", 1)));
+        // The same title by another artist is another album.
+        assert!(names.contains(&("THE BOOK", "X", 1)));
+        assert!(!names.iter().any(|(n, _, _)| n.is_empty()), "songs without an album are not an album");
+    }
+
+    #[test]
+    fn an_albums_songs_come_back_by_its_key() {
+        let lib = lib_with_two_folders();
+        let key = album_key("THE BOOK", "YOASOBI");
+        let titles: Vec<String> = lib.album_tracks(&key).into_iter().map(|t| t.title).collect();
+        assert_eq!(titles, ["Tabun", "Yoru ni Kakeru"]);
+        assert!(lib.album_tracks("no such album").is_empty());
     }
 
     #[test]

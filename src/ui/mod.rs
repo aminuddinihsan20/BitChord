@@ -75,6 +75,10 @@ pub enum Page {
     Transfer,
     /// Music from one folder the listener chose (its address).
     LocalFolder(String),
+    /// One album of local music, across the folders (its key, see `local::album_key`).
+    LocalAlbum(String),
+    /// Every local song of every folder, as one list.
+    LocalSongs,
 }
 
 #[derive(Clone, Copy, PartialEq, Hash, Debug)]
@@ -307,6 +311,8 @@ pub struct App {
     back: Vec<Page>,
     /// Phone frame: the bottom navigation's lit tab (see `phone`).
     phone_tab: phone::Tab,
+    /// Downloads on a phone: which of Folders, Albums and Songs is showing.
+    local_tab: pages::LocalTab,
     forward: Vec<Page>,
     page_changed: f64,
     loading: bool,
@@ -675,6 +681,12 @@ impl App {
             page: Page::Home,
             back: Vec::new(),
             phone_tab: phone::Tab::Home,
+            // Dev hook: YTM_LOCAL_TAB=albums|songs opens that view of the phone's Downloads.
+            local_tab: match dev_var("YTM_LOCAL_TAB") {
+                Some("albums") => pages::LocalTab::Albums,
+                Some("songs") => pages::LocalTab::Songs,
+                _ => pages::LocalTab::Folders,
+            },
             forward: Vec::new(),
             page_changed: 0.0,
             loading: false,
@@ -875,6 +887,8 @@ impl App {
             Ok("history") => app.go(Page::Library(LibTab::History)),
             Ok("downloads") => app.go(Page::Downloads),
             Ok(p) if p.starts_with("local:") => app.go(Page::LocalFolder(p[6..].to_owned())),
+            Ok("localsongs") => app.go(Page::LocalSongs),
+            Ok(p) if p.starts_with("localalbum:") => app.go(Page::LocalAlbum(p[11..].replace('|', "\u{1f}"))),
             Ok("settings") => app.go(Page::Settings),
             Ok("transfer") => app.go(Page::Transfer),
             Ok("jam") => app.go(Page::Settings),

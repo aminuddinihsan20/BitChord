@@ -75,6 +75,8 @@ pub fn page(app: &mut App, ui: &mut Ui, now: f64) {
             Page::Settings => settings(app, ui),
             Page::Transfer => super::transfer::page(app, ui, now),
             Page::LocalFolder(uri) => local_folder(app, ui, uri, now),
+            Page::LocalAlbum(key) => local_album(app, ui, key, now),
+            Page::LocalSongs => local_songs(app, ui, now),
         }
         // Room to scroll the last rows clear of the player's frosted strip.
         ui.add_space(96.0);
@@ -683,19 +685,21 @@ fn collection(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     let mut start_select = false;
     let mut stop_select = false;
     ui.add_space(18.0);
-    ui.horizontal_top(|ui| {
-        let (img, _) = ui.allocate_exact_size(Vec2::splat(232.0), Sense::hover());
+    // Beside the art on a wide screen; below it, and smaller, on a phone.
+    let phone = crate::platform::phone();
+    let header = |ui: &mut Ui| {
+        let (img, _) = ui.allocate_exact_size(Vec2::splat(if phone { 168.0 } else { 232.0 }), Sense::hover());
         widgets::soft_shadow(ui, img, 10.0, 40.0, 0.5);
         paint_cover(ui, img, &c.thumbs, theme::card_radius() + 2.0, 1.0);
         if let Some(s) = &sprite {
             widgets::paint_motion(ui, img, theme::card_radius() + 2.0, s);
         }
-        ui.add_space(26.0);
+        ui.add_space(if phone { 16.0 } else { 26.0 });
         ui.vertical(|ui| {
             ui.set_max_width(ui.available_width().min(760.0));
-            ui.add_space(24.0);
+            ui.add_space(if phone { 0.0 } else { 24.0 });
             ui.label(RichText::new(if is_album { "ALBUM" } else { "PLAYLIST" }).font(theme::semibold(12.0)).color(theme::text_dim()));
-            ui.label(RichText::new(&c.title).font(theme::bold(40.0)).color(theme::text()));
+            ui.label(RichText::new(&c.title).font(theme::bold(if phone { 26.0 } else { 40.0 })).color(theme::text()));
             ui.add_space(2.0);
             let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::hover());
             widgets::linked_text(ui, r.min, &c.byline(), &c.artists, theme::regular(15.0), theme::text_dim(), r.width(), acts);
@@ -787,7 +791,12 @@ fn collection(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
             }
 
         });
-    });
+    };
+    if phone {
+        ui.vertical(header);
+    } else {
+        ui.horizontal_top(header);
+    }
     let mut dismiss_search = false;
     if let Some((fid, query)) = &mut app.coll_search
         && fid == id
@@ -1198,7 +1207,12 @@ fn downloads_phone(app: &mut App, ui: &mut Ui, now: f64) {
     storage_card(app, ui, songs.len());
     ui.add_space(28.0);
     phone_section(ui, "Music on this phone", "Only the folders you add are read. Ringtones and other sounds stay out.");
-    folder_grid(app, ui);
+    local_tabs(app, ui);
+    match app.local_tab {
+        LocalTab::Folders => folder_list(app, ui),
+        LocalTab::Albums => album_list(app, ui),
+        LocalTab::Songs => song_preview(app, ui),
+    }
     ui.add_space(30.0);
     phone_section(ui, "Downloaded", "");
     if songs.is_empty() {
@@ -1268,53 +1282,138 @@ fn storage_card(app: &mut App, ui: &mut Ui, count: usize) {
     }
 }
 
-/// The folders as two columns of coloured tiles, each with its name and song count, and a
-/// tile to add another.
-fn folder_grid(app: &mut App, ui: &mut Ui) {
-    const GAP: f32 = 16.0;
-    let folders = crate::local::folders();
-    let tile = ((ui.available_width() - GAP) / 2.0).floor();
-    let height = tile + 50.0;
-    let slots = folders.len() + usize::from(crate::platform::HAS_SAF);
-    if slots == 0 {
-        ui.label(RichText::new("No folders yet.").font(theme::regular(14.0)).color(theme::text_dim()));
-        return;
-    }
-    let rows = slots.div_ceil(2);
-    let (area, _) = ui.allocate_exact_size(vec2(ui.available_width(), rows as f32 * height + (rows - 1) as f32 * 8.0), Sense::hover());
-    let accent = app.accent_color();
-    for slot in 0..slots {
-        let (col, row) = (slot % 2, slot / 2);
-        let art = Rect::from_min_size(pos2(area.left() + col as f32 * (tile + GAP), area.top() + row as f32 * (height + 8.0)), Vec2::splat(tile));
-        let id = ui.scope_id().with(("folder-tile", slot));
-        match folders.get(slot) {
-            Some(f) => {
-                let resp = named(ui.interact(art, id, Sense::click()), &f.name);
-                let tex = widgets::folder_art(ui.ctx(), &f.name);
-                let tint = if resp.is_pointer_button_down_on() { Color32::from_gray(205) } else { Color32::WHITE };
-                ui.painter().image(tex.id(), art, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), tint);
-                widgets::icon_at(ui, pos2(art.left() + 30.0, art.bottom() - 30.0), icon::FOLDER_OPEN, 26.0, Color32::from_white_alpha(235));
-                let looking = app.scanning(&f.uri);
-                let sub = if looking { "Looking for music\u{2026}".to_owned() } else { format!("{} song{}", f.songs, if f.songs == 1 { "" } else { "s" }) };
-                widgets::text_at(ui, pos2(art.left() + 2.0, art.bottom() + 9.0), &f.name, theme::semibold(15.5), theme::text(), tile - 4.0);
-                widgets::text_at(ui, pos2(art.left() + 2.0, art.bottom() + 29.0), &sub, theme::regular(12.5), theme::text_dim(), tile - 4.0);
-                if resp.clicked() {
-                    app.actions.push(Action::Go(Page::LocalFolder(f.uri.clone())));
-                }
-            }
-            None => {
-                let resp = named(ui.interact(art, id, Sense::click()), "Add a music folder");
-                ui.painter().rect_filled(art, 22.0, theme::glass(if resp.is_pointer_button_down_on() { 0.12 } else { 0.06 }));
-                ui.painter().rect_stroke(art, 22.0, egui::Stroke::new(1.5, theme::with_alpha(accent, 0.55)), egui::StrokeKind::Inside);
-                ui.painter().text(art.center() - vec2(0.0, 4.0), Align2::CENTER_CENTER, "+", theme::regular(54.0), accent);
-                widgets::text_at(ui, pos2(art.left() + 2.0, art.bottom() + 9.0), "Add folder", theme::semibold(15.5), accent, tile - 4.0);
-                widgets::text_at(ui, pos2(art.left() + 2.0, art.bottom() + 29.0), "Japanese, English\u{2026}", theme::regular(12.5), theme::text_dim(), tile - 4.0);
-                if resp.clicked() {
-                    app.ask_folder(super::storage::Purpose::Music);
-                }
-            }
+/// Which of the three views of the music on this phone is showing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocalTab {
+    Folders,
+    Albums,
+    Songs,
+}
+
+/// Folder / Album / Song as a segmented control (the way iOS switches views).
+fn local_tabs(app: &mut App, ui: &mut Ui) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::hover());
+    ui.painter().rect_filled(rect, 12.0, theme::glass(0.09));
+    let w = (rect.width() - 6.0) / 3.0;
+    for (i, (tab, label)) in [(LocalTab::Folders, "Folder"), (LocalTab::Albums, "Album"), (LocalTab::Songs, "Song")].into_iter().enumerate() {
+        let r = Rect::from_min_size(pos2(rect.left() + 3.0 + i as f32 * w, rect.top() + 3.0), vec2(w, 32.0));
+        let resp = named(ui.interact(r, ui.scope_id().with(("local-tab", i)), Sense::click()), label);
+        let on = app.local_tab == tab;
+        let k = theme::anim_bool(ui.ctx(), resp.id.with("on"), on, 0.15);
+        if k > 0.0 {
+            ui.painter().rect_filled(r, 10.0, theme::with_alpha(Color32::WHITE, 0.2 * k));
+        }
+        ui.painter().text(r.center(), Align2::CENTER_CENTER, label, if on { theme::semibold(14.0) } else { theme::regular(14.0) }, if on { theme::text() } else { theme::text_dim() });
+        if resp.clicked() {
+            app.local_tab = tab;
         }
     }
+    ui.add_space(14.0);
+}
+
+/// One long card: a coloured square on the left, a name and a line under it, a chevron.
+fn long_card(ui: &mut Ui, id: egui::Id, seed: &str, glyph: char, title: &str, sub: &str) -> egui::Response {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 72.0), Sense::hover());
+    let resp = named(ui.interact(rect, id, Sense::click()), title);
+    ui.painter().rect_filled(rect, 18.0, theme::glass(if resp.is_pointer_button_down_on() { 0.13 } else { 0.075 }));
+    let art = Rect::from_center_size(pos2(rect.left() + 12.0 + 24.0, rect.center().y), Vec2::splat(48.0));
+    let tex = widgets::folder_art(ui.ctx(), seed);
+    ui.painter().image(tex.id(), art, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+    widgets::icon_at(ui, art.center(), glyph, 21.0, Color32::from_white_alpha(240));
+    let text_l = art.right() + 14.0;
+    let text_w = (rect.right() - 36.0 - text_l).max(40.0);
+    widgets::text_at(ui, pos2(text_l, rect.center().y - 20.0), title, theme::semibold(16.0), theme::text(), text_w);
+    widgets::text_at(ui, pos2(text_l, rect.center().y + 2.0), sub, theme::regular(13.0), theme::text_dim(), text_w);
+    widgets::icon_at(ui, pos2(rect.right() - 20.0, rect.center().y), icon::CHEVRON_RIGHT, 16.0, theme::text_faint());
+    ui.add_space(8.0);
+    resp
+}
+
+fn count_text(n: usize, one: &str) -> String {
+    format!("{n} {one}{}", if n == 1 { "" } else { "s" })
+}
+
+/// The folders as long cards, and a card to add another.
+fn folder_list(app: &mut App, ui: &mut Ui) {
+    for (i, f) in crate::local::folders().iter().enumerate() {
+        let sub = if app.scanning(&f.uri) { "Looking for music\u{2026}".to_owned() } else { count_text(f.songs, "song") };
+        if long_card(ui, ui.scope_id().with(("folder-card", i)), &f.name, icon::FOLDER_OPEN, &f.name, &sub).clicked() {
+            app.actions.push(Action::Go(Page::LocalFolder(f.uri.clone())));
+        }
+    }
+    if crate::platform::HAS_SAF {
+        let accent = app.accent_color();
+        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 56.0), Sense::hover());
+        let resp = named(ui.interact(rect, ui.scope_id().with("add-folder"), Sense::click()), "Add a music folder");
+        ui.painter().rect_filled(rect, 18.0, theme::glass(if resp.is_pointer_button_down_on() { 0.12 } else { 0.05 }));
+        ui.painter().rect_stroke(rect, 18.0, egui::Stroke::new(1.3, theme::with_alpha(accent, 0.55)), egui::StrokeKind::Inside);
+        ui.painter().text(pos2(rect.left() + 30.0, rect.center().y - 1.0), Align2::CENTER_CENTER, "+", theme::regular(28.0), accent);
+        ui.painter().text(pos2(rect.left() + 56.0, rect.center().y), Align2::LEFT_CENTER, "Add a music folder", theme::semibold(15.5), accent);
+        if resp.clicked() {
+            app.ask_folder(super::storage::Purpose::Music);
+        }
+    }
+}
+
+/// Albums across all the folders, as long cards.
+fn album_list(app: &mut App, ui: &mut Ui) {
+    let albums = crate::local::albums();
+    if albums.is_empty() {
+        ui.label(RichText::new("No albums yet. Songs whose files name an album are grouped here.").font(theme::regular(14.0)).color(theme::text_dim()));
+        return;
+    }
+    for (i, a) in albums.iter().enumerate() {
+        let sub = if a.artist.is_empty() { count_text(a.songs, "song") } else { format!("{} \u{2022} {}", a.artist, count_text(a.songs, "song")) };
+        if long_card(ui, ui.scope_id().with(("album-card", i)), &a.name, icon::MUSIC, &a.name, &sub).clicked() {
+            app.actions.push(Action::Go(Page::LocalAlbum(a.key.clone())));
+        }
+    }
+}
+
+/// A button to the whole list of songs, and how many there are.
+fn song_preview(app: &mut App, ui: &mut Ui) {
+    let n = crate::local::all_tracks().len();
+    if n == 0 {
+        ui.label(RichText::new("No songs yet. Add a folder first.").font(theme::regular(14.0)).color(theme::text_dim()));
+        return;
+    }
+    if long_card(ui, ui.scope_id().with("all-songs"), "All songs", icon::MUSIC, "All songs", &format!("{} from every folder", count_text(n, "song"))).clicked() {
+        app.actions.push(Action::Go(Page::LocalSongs));
+    }
+}
+
+/// A list of local songs under a heading: Play / Shuffle and the rounded group.
+fn local_song_page(app: &mut App, ui: &mut Ui, title: &str, sub: &str, songs: Vec<Track>, now: f64) {
+    page_title(ui, title);
+    ui.add_space(2.0);
+    ui.label(RichText::new(sub).font(theme::regular(14.0)).color(theme::text_dim()));
+    ui.add_space(16.0);
+    if songs.is_empty() {
+        ui.label(RichText::new("No music here.").font(theme::semibold(15.0)).color(theme::text()));
+        return;
+    }
+    play_shuffle(app, ui, &songs);
+    ui.add_space(16.0);
+    let rows = Rows::new(app, now);
+    egui::Frame::new().fill(theme::glass(0.06)).corner_radius(20).inner_margin(egui::Margin::symmetric(4, 6)).show(ui, |ui| {
+        list(ui, &rows, &app.liked, &songs, true, |_, _| None, ListCtx { sel: &mut app.selection, page: &app.page, own: false }, &mut app.actions);
+    });
+}
+
+fn local_songs(app: &mut App, ui: &mut Ui, now: f64) {
+    let songs = crate::local::all_tracks();
+    let sub = format!("{} from every folder", count_text(songs.len(), "song"));
+    local_song_page(app, ui, "All songs", &sub, songs, now);
+}
+
+fn local_album(app: &mut App, ui: &mut Ui, key: &str, now: f64) {
+    let info = crate::local::albums().into_iter().find(|a| a.key == key);
+    let songs = crate::local::album_tracks(key);
+    let (name, sub) = match &info {
+        Some(a) => (a.name.clone(), if a.artist.is_empty() { count_text(a.songs, "song") } else { format!("{} \u{2022} {}", a.artist, count_text(a.songs, "song")) }),
+        None => ("Album".to_owned(), String::new()),
+    };
+    local_song_page(app, ui, &name, &sub, songs, now);
 }
 
 /// No downloads yet: a coloured tile and a friendly line, instead of an empty list.

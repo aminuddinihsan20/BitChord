@@ -818,6 +818,14 @@ fn options_menu(app: &mut App, ui: &mut Ui, rect: Rect, track: &crate::model::Tr
             lyric_options(app, ui);
             menu_divider(ui);
         }
+        // Spatial audio on or off, right where the music is.
+        let mut spatial = app.spatial;
+        switch_row(ui, "Spatial audio", &mut spatial);
+        if spatial != app.spatial {
+            app.spatial = spatial;
+            app.set_crossfade();
+        }
+        menu_divider(ui);
         widgets::song_actions(ui, track, liked, None, false, &mut app.actions);
         menu_divider(ui);
         let queue = app.np_tab == NpTab::UpNext;

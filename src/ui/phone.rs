@@ -29,7 +29,7 @@ impl Tab {
             Page::Home | Page::New => Tab::Home,
             Page::Search(_) => Tab::Search,
             Page::Library(_) => Tab::Library,
-            Page::Downloads | Page::LocalFolder(_) => Tab::Downloads,
+            Page::Downloads | Page::LocalFolder(_) | Page::LocalAlbum(_) | Page::LocalSongs => Tab::Downloads,
             Page::Album(_) | Page::Playlist(_) | Page::Artist(_) | Page::Settings | Page::Transfer => last,
         }
     }
