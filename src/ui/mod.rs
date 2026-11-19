@@ -19,6 +19,7 @@ mod mini;
 mod notes;
 mod nowplaying;
 mod pages;
+mod phone;
 mod playback;
 mod queue;
 mod responses;
@@ -297,6 +298,8 @@ pub struct App {
     // navigation
     page: Page,
     back: Vec<Page>,
+    /// Phone frame: the bottom navigation's lit tab (see `phone`).
+    phone_tab: phone::Tab,
     forward: Vec<Page>,
     page_changed: f64,
     loading: bool,
@@ -657,6 +660,7 @@ impl App {
             bg,
             page: Page::Home,
             back: Vec::new(),
+            phone_tab: phone::Tab::Home,
             forward: Vec::new(),
             page_changed: 0.0,
             loading: false,
@@ -1178,7 +1182,8 @@ impl App {
     /// Height of the bottom player area: the capsule's 56 points plus the margin it
     /// floats on.
     fn bar_height(&self) -> f32 {
-        86.0
+        // The phone's mini player and navigation (the gesture area's inset comes on top).
+        if crate::platform::phone() { phone::NAV_H + phone::MINI_H + 8.0 } else { 86.0 }
     }
 
     fn toast(&mut self, msg: impl Into<String>) {
@@ -1350,19 +1355,37 @@ impl eframe::App for App {
             return;
         }
         shell::background(self, ui, screen, now, covered.then_some(bar_strip));
-        if !self.fullscreen && !covered {
+        let phone = crate::platform::phone();
+        if phone {
+            // Android's back button: the activity asks whether there is anything to go
+            // back to, and sends the press this way.
+            crate::platform::set_wake(&ctx);
+            crate::platform::set_can_go_back(self.np_open || !self.back.is_empty());
+            if crate::platform::take_back_request() {
+                self.nav_back();
+            }
+        }
+        if !self.fullscreen && !covered && !phone {
             // The top of the window, down to the search box's row: what's on it comes after.
             titlebar::drag_area(ui, egui::Rect::from_min_size(screen.min, egui::vec2(screen.width(), titlebar::HEIGHT)), "main");
         }
         if !self.fullscreen && covered {
-            // Now playing hides the pages: the player bar keeps its full-width place.
+            // Now playing hides the pages: the player bar keeps its full-width place. On a
+            // phone it sits above the gesture area.
+            let gap = if phone { crate::platform::insets(&ctx).bottom } else { 0.0 };
             egui::Panel::bottom("player").resizable(false)
-                .exact_size(self.bar_height())
+                .exact_size(if phone { 86.0 } else { self.bar_height() } + gap)
                 .frame(egui::Frame::new())
                 .show_separator_line(false)
-                .show(ui, |ui| shell::player_bar(self, ui, now, false));
+                .show(ui, |ui| {
+                    let r = ui.max_rect();
+                    let above = egui::Rect::from_min_max(r.min, egui::pos2(r.max.x, r.max.y - gap));
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(above), |ui| shell::player_bar(self, ui, now, false));
+                });
         }
-        if !self.fullscreen && !covered {
+        if phone && !covered {
+            phone::frame(self, ui, now, screen);
+        } else if !self.fullscreen && !covered {
             use crate::preset::SidebarStyle;
             let side_alpha = app_style.sidebar_alpha.clamp(0.0, 1.0);
             // The logo's row is 32 points tall.
@@ -1470,6 +1493,21 @@ impl eframe::App for App {
             }
         }
         smooth_wheel(self, ctx, raw);
+        // The phone's keyboard text, which winit doesn't pass on (see `platform`). While a
+        // text field has the focus the UI polls for it: nothing else wakes an idle frame.
+        if crate::platform::phone() {
+            if let Some(typed) = crate::platform::take_typed_text() {
+                raw.events.push(egui::Event::Text(typed));
+            }
+            if crate::platform::take_enter() {
+                for pressed in [true, false] {
+                    raw.events.push(egui::Event::Key { key: egui::Key::Enter, physical_key: Some(egui::Key::Enter), pressed, repeat: false, modifiers: egui::Modifiers::NONE });
+                }
+            }
+            if ctx.egui_wants_keyboard_input() {
+                ctx.request_repaint_after(Duration::from_millis(60));
+            }
+        }
         if let Some((x, y)) = dev_var("YTM_FAKE_POINTER").and_then(|v| {
             let (x, y) = v.split_once(',')?;
             Some((x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?))

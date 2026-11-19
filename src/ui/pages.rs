@@ -57,7 +57,8 @@ pub fn page(app: &mut App, ui: &mut Ui, now: f64) {
     let out = area.show(ui, |ui| {
         // The panel reaches the window's side so egui's own bar sits flush with it; the
         // content keeps its measured right edge instead of following the panel.
-        ui.set_max_width((ui.available_width() - 48.0).max(0.0));
+        // (A phone's panel keeps its own side margins, so nothing is held back there.)
+        ui.set_max_width((ui.available_width() - if crate::platform::phone() { 0.0 } else { 48.0 }).max(0.0));
         ui.add_space(18.0 * (1.0 - t));
         match &page {
             Page::Home => home(app, ui, now),
@@ -385,6 +386,10 @@ fn selection_bar(app: &mut App, ctx: &egui::Context, page: &Page, area: Rect) {
 
 fn home(app: &mut App, ui: &mut Ui, now: f64) {
     page_title(ui, "Home");
+    // The phone's navigation has no "New" tab: its page opens from here.
+    if crate::platform::phone() && pill(ui, "New releases", Some(icon::CHEVRON_RIGHT), false).clicked() {
+        app.actions.push(Action::Go(Page::New));
+    }
     // A refresh keeps showing the current feed; the skeleton is only for an empty one.
     if app.home.as_ref().is_none_or(|h| app.home_loading && h.shelves.is_empty()) {
         placeholder(app, ui, now, 3, CARD);
@@ -500,7 +505,8 @@ fn search(app: &mut App, ui: &mut Ui, q: &str, now: f64) {
     }
     ui.add_space(14.0);
     // Top result: the first artist when the query names one, otherwise the first song.
-    ui.horizontal_top(|ui| {
+    // Beside the song list on a wide screen; above it on a phone.
+    let top_and_songs = |ui: &mut Ui| {
         if let Some(top) = r.artists.first().filter(|a| a.title.eq_ignore_ascii_case(q.trim())) {
             top_result(ui, top, false, false, acts);
         } else if let Some(t) = r.tracks.first() {
@@ -527,7 +533,12 @@ fn search(app: &mut App, ui: &mut Ui, q: &str, now: f64) {
                 }
             }
         });
-    });
+    };
+    if crate::platform::phone() {
+        ui.vertical(top_and_songs);
+    } else {
+        ui.horizontal_top(top_and_songs);
+    }
     card_row_plain(ui, "s-artists", "Artists", &r.artists, acts);
     card_row_plain(ui, "s-albums", "Albums", &r.albums, acts);
     if r.tracks.len() > 4 {
@@ -600,7 +611,7 @@ fn recent_searches(ui: &mut Ui, app: &mut App) {
 fn top_result(ui: &mut Ui, c: &Card, pick: bool, liked: bool, acts: &mut Vec<Action>) {    ui.vertical(|ui| {
         ui.label(RichText::new("Top result").font(theme::bold(24.0)));
         ui.add_space(8.0);
-        let (rect, resp) = ui.allocate_exact_size(vec2(420.0, 236.0), Sense::click());
+        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width().min(420.0), 236.0), Sense::click());
         let resp = named(resp, &c.title).on_hover_cursor(egui::CursorIcon::PointingHand);
         let h = theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.contains_pointer(), 0.2);
         ui.painter().rect_filled(rect, 14.0, theme::glass(0.07 + 0.05 * h));
@@ -2287,20 +2298,28 @@ pub(super) fn setting_row(ui: &mut Ui, title: &str, desc: Option<&str>, control:
         return;
     }
     let w = ui.available_width();
-    let text_w = (w - 230.0).max(200.0);
+    // A phone is too narrow for the control beside the text: it goes underneath, in a
+    // row tall enough for a thumb.
+    let stacked = crate::platform::phone();
+    let text_w = if stacked { w } else { (w - 230.0).max(200.0) };
     let title_g = widgets::galley(ui, title, theme::semibold(14.5), theme::text(), text_w);
     let desc_g = desc.map(|d| widgets::galley_wrapped(ui, d, theme::regular(12.5), theme::text_dim(), text_w, 3));
     let text_h = title_g.size().y + desc_g.as_ref().map_or(0.0, |g| g.size().y + 3.0);
-    let h = (text_h + 26.0).max(58.0);
+    let ctl_h = if stacked { 48.0 } else { 0.0 };
+    let h = if stacked { text_h + 20.0 + ctl_h } else { (text_h + 26.0).max(58.0) };
     let (rect, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
     let fade = if ui.is_enabled() { 1.0 } else { 0.45 };
-    let top = rect.center().y - text_h / 2.0;
+    let top = if stacked { rect.top() + 10.0 } else { rect.center().y - text_h / 2.0 };
     ui.painter().galley(pos2(rect.left(), top), title_g.clone(), theme::with_alpha(theme::text(), fade));
     if let Some(g) = desc_g {
         ui.painter().galley(pos2(rect.left(), top + title_g.size().y + 3.0), g, theme::with_alpha(theme::text_dim(), fade));
     }
-    let ctl = Rect::from_min_max(pos2(rect.left() + text_w + 20.0, rect.top()), rect.max);
-    let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(ctl).layout(egui::Layout::right_to_left(egui::Align::Center)));
+    let (ctl, layout) = if stacked {
+        (Rect::from_min_max(pos2(rect.left(), rect.bottom() - ctl_h), rect.max), egui::Layout::left_to_right(egui::Align::Center))
+    } else {
+        (Rect::from_min_max(pos2(rect.left() + text_w + 20.0, rect.top()), rect.max), egui::Layout::right_to_left(egui::Align::Center))
+    };
+    let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(ctl).layout(layout));
     control(&mut cui);
 }
 
@@ -2311,7 +2330,8 @@ pub(super) fn open_row(ui: &mut Ui, title: &str, desc: &str) -> bool {
         return false;
     }
     let w = ui.available_width();
-    let text_w = (w - 230.0).max(200.0);
+    // The chevron needs only a little room; a phone gives the text the rest.
+    let text_w = if crate::platform::phone() { w - 32.0 } else { (w - 230.0).max(200.0) };
     let title_g = widgets::galley(ui, title, theme::semibold(14.5), theme::text(), text_w);
     let desc_g = widgets::galley_wrapped(ui, desc, theme::regular(12.5), theme::text_dim(), text_w, 3);
     let text_h = title_g.size().y + desc_g.size().y + 3.0;

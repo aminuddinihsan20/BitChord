@@ -107,7 +107,23 @@ pub fn overlay(app: &mut App, ctx: &egui::Context, now: f64) {
             }
             let k = b.scrim / 0.3;
             super::shell::vgradient(ui.painter(), rect, theme::shade((0.18 * k).min(0.95)), theme::shade((0.42 * k).min(0.95)));
-            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(32.0, 20.0))));
+            let mut inner = rect.shrink2(vec2(32.0, 20.0));
+            if crate::platform::phone() {
+                // Clear of the status bar and the gesture area; the sides are narrow.
+                let insets = crate::platform::insets(ctx);
+                inner = Rect::from_min_max(
+                    pos2(rect.left() + 16.0 + insets.left, rect.top() + insets.top + 8.0),
+                    pos2(rect.right() - 16.0 - insets.right, rect.bottom() - insets.bottom - 8.0),
+                );
+                // The cover column carries the transport; the lyrics and up-next panels
+                // (which replace it on a narrow screen) get the player's own bar below.
+                if view(app, ctx) != NpTab::Art {
+                    inner.max.y -= 86.0;
+                    let strip = Rect::from_min_max(pos2(rect.left(), inner.max.y), pos2(rect.right(), inner.max.y + 86.0));
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(strip), |ui| super::shell::player_bar(app, ui, now, false));
+                }
+            }
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner));
             body(app, &mut child, now);
         });
 }
