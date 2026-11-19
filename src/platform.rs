@@ -130,9 +130,67 @@ pub fn take_enter() -> bool {
     ENTER_PRESSED.swap(false, Ordering::SeqCst)
 }
 
+/// Which service the Android sign-in activity is asked to sign in to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoginSite {
+    Google,
+    Spotify,
+}
+
+impl LoginSite {
+    /// The number the activity (Java) knows it by.
+    pub fn code(self) -> i32 {
+        match self {
+            LoginSite::Google => 1,
+            LoginSite::Spotify => 2,
+        }
+    }
+
+    pub fn from_code(code: i32) -> Option<LoginSite> {
+        match code {
+            1 => Some(LoginSite::Google),
+            2 => Some(LoginSite::Spotify),
+            _ => None,
+        }
+    }
+}
+
+/// What the activity answers when the person closes the sign-in without signing in.
+pub const LOGIN_CANCELLED: &str = "cancelled";
+
+static LOGIN_REQUEST: AtomicI32 = AtomicI32::new(0);
+static LOGIN_REPLY: std::sync::Mutex<Option<std::sync::mpsc::Sender<Result<String, String>>>> = std::sync::Mutex::new(None);
+
+/// Android: ask the activity to open the sign-in page and wait for what it finds: the
+/// session cookie, or why not. The request is withdrawn if nothing answers in `timeout`.
+pub fn request_login(site: LoginSite, timeout: std::time::Duration) -> Result<String, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    *LOGIN_REPLY.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
+    LOGIN_REQUEST.store(site.code(), Ordering::SeqCst);
+    let answer = rx.recv_timeout(timeout).unwrap_or_else(|_| Err("sign-in timed out".to_owned()));
+    LOGIN_REQUEST.store(0, Ordering::SeqCst);
+    *LOGIN_REPLY.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    answer
+}
+
+/// The activity polls this: a sign-in asked for since the last call.
+pub fn take_login_request() -> Option<LoginSite> {
+    LoginSite::from_code(LOGIN_REQUEST.swap(0, Ordering::SeqCst))
+}
+
+/// The activity's answer to [`request_login`].
+pub fn finish_login(answer: Result<String, String>) {
+    if let Some(tx) = LOGIN_REPLY.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        let _ = tx.send(answer);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The login tests share the login statics.
+    static LOGIN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn insets_in_pixels_become_points() {
@@ -182,6 +240,40 @@ mod tests {
         press_enter();
         assert!(take_enter());
         assert!(!take_enter());
+    }
+
+    #[test]
+    fn a_login_request_reaches_the_activity_and_its_answer_comes_back() {
+        let _one = LOGIN.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(take_login_request(), None);
+        let waiting = std::thread::spawn(|| request_login(LoginSite::Spotify, std::time::Duration::from_secs(5)));
+        // The activity polls for the request, then reports.
+        let site = loop {
+            if let Some(site) = take_login_request() {
+                break site;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert_eq!(site, LoginSite::Spotify);
+        assert_eq!(take_login_request(), None, "taken once");
+        finish_login(Ok("sp_dc-value".to_owned()));
+        assert_eq!(waiting.join().unwrap(), Ok("sp_dc-value".to_owned()));
+    }
+
+    #[test]
+    fn a_login_nobody_answers_times_out_and_is_withdrawn() {
+        let _one = LOGIN.lock().unwrap_or_else(|e| e.into_inner());
+        let r = request_login(LoginSite::Google, std::time::Duration::from_millis(50));
+        assert!(r.is_err(), "{r:?}");
+        assert_eq!(take_login_request(), None, "nothing is left for the activity to find");
+    }
+
+    #[test]
+    fn a_login_site_has_a_code_for_the_activity_and_back() {
+        for site in [LoginSite::Google, LoginSite::Spotify] {
+            assert_eq!(LoginSite::from_code(site.code()), Some(site));
+        }
+        assert_eq!(LoginSite::from_code(0), None);
     }
 
     #[test]

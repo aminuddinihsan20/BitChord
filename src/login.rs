@@ -8,8 +8,8 @@
 //! when both pump windows in one process (STATUS_FATAL_USER_CALLBACK_EXCEPTION), and a
 //! separate process also returns all webview memory to the OS once sign-in ends.
 //!
-//! Android can't start such a child process, so there `spawn` reports that signing in
-//! isn't available yet (an Android WebView sign-in is planned separately).
+//! Android can't start such a child process: there `spawn` asks the activity, which
+//! signs in in an Android WebView (`LoginActivity.java`) and hands the cookie back.
 #![cfg_attr(target_os = "android", allow(dead_code))]
 
 use std::path::PathBuf;
@@ -88,10 +88,25 @@ const SAFARI_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWe
 pub const FLAG: &str = "--login";
 pub const SPOTIFY_FLAG: &str = "--login-spotify";
 
-/// Android: no sign-in window yet; `done` is told so.
+/// Android: the activity opens the sign-in page in a WebView (`LoginActivity`), since a
+/// child process can't show a window there; `done` is called with its answer.
 #[cfg(target_os = "android")]
-pub fn spawn(_site: Site, _profile_dir: PathBuf, done: impl FnOnce(Outcome) + Send + 'static) {
-    done(Outcome::Failed("signing in isn't available on Android yet".to_owned()));
+pub fn spawn(site: Site, _profile_dir: PathBuf, done: impl FnOnce(Outcome) + Send + 'static) {
+    use crate::platform::{LOGIN_CANCELLED, LoginSite};
+    std::thread::Builder::new()
+        .name("login".into())
+        .spawn(move || {
+            let which = match site {
+                Site::Google => LoginSite::Google,
+                Site::Spotify => LoginSite::Spotify,
+            };
+            done(match crate::platform::request_login(which, std::time::Duration::from_secs(15 * 60)) {
+                Ok(cookie) => Outcome::Cookie(cookie),
+                Err(e) if e == LOGIN_CANCELLED => Outcome::Cancelled,
+                Err(e) => Outcome::Failed(e),
+            });
+        })
+        .expect("spawn login thread");
 }
 
 /// Show the sign-in window in a child process; `done` is called exactly once.

@@ -27,5 +27,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- The sign-in page (a WebView), opened by MainActivity when the app asks. -->
+        <activity
+            android:name=".LoginActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|uiMode|density|locale|layoutDirection|fontScale"
+            android:windowSoftInputMode="adjustResize" />
     </application>
 </manifest>

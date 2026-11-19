@@ -95,3 +95,17 @@ extern "system" fn Java_io_github_aminuddinihsan20_bitchord_MainActivity_nativeB
 extern "system" fn Java_io_github_aminuddinihsan20_bitchord_MainActivity_nativeEnter(_env: Jni, _class: Jni) {
     bitchord::platform::press_enter();
 }
+
+/// The activity polls for a sign-in the app asked for: 1 Google, 2 Spotify, 0 none.
+#[unsafe(no_mangle)]
+extern "system" fn Java_io_github_aminuddinihsan20_bitchord_MainActivity_nativeTakeLoginRequest(_env: Jni, _class: Jni) -> i32 {
+    bitchord::platform::take_login_request().map_or(0, bitchord::platform::LoginSite::code)
+}
+
+/// LoginActivity's answer: `ok` with the cookie in `text`, or not ok with why (or
+/// "cancelled") there.
+#[unsafe(no_mangle)]
+extern "system" fn Java_io_github_aminuddinihsan20_bitchord_LoginActivity_nativeLoginResult(mut env: jni::JNIEnv, _class: jni::objects::JClass, ok: u8, text: jni::objects::JString) {
+    let text: String = env.get_string(&text).map(Into::into).unwrap_or_default();
+    bitchord::platform::finish_login(if ok != 0 { Ok(text) } else { Err(text) });
+}

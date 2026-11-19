@@ -1151,7 +1151,7 @@ pub fn toast(app: &mut App, ctx: &egui::Context, now: f64) {
         .order(egui::Order::Tooltip)
         .pivot(Align2::CENTER_BOTTOM)
         // Above the player bar; in the mini player, over the strip's middle.
-        .fixed_pos(Pos2::new(screen.center().x, if screen.height() < 200.0 { screen.center().y + 22.0 } else { screen.bottom() - 104.0 } + 14.0 * (1.0 - t)))
+        .fixed_pos(Pos2::new(screen.center().x, if screen.height() < 200.0 { screen.center().y + 22.0 } else { screen.bottom() - if crate::platform::phone() { app.bar_height() + crate::platform::insets(ctx).bottom + 8.0 } else { 104.0 } } + 14.0 * (1.0 - t)))
         .show(ctx, |ui| {
             ui.set_opacity(t);
             egui::Frame::new()
@@ -1160,7 +1160,8 @@ pub fn toast(app: &mut App, ctx: &egui::Context, now: f64) {
                 .inner_margin(egui::Margin::symmetric(18, 12))
                 .shadow(egui::epaint::Shadow { offset: [0, 8], blur: 24, spread: 0, color: theme::shade(0.45) })
                 .show(ui, |ui| {
-                    ui.set_max_width(520.0);
+                    // Wraps within the screen on a phone (the frame adds 36 and the sides 16 each).
+                    ui.set_max_width(520.0_f32.min((screen.width() - 32.0 - 36.0).max(120.0)));
                     ui.label(egui::RichText::new(msg.as_str()).font(theme::regular(14.0)).color(theme::text()));
                 });
         });

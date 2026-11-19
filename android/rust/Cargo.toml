@@ -18,3 +18,4 @@ eframe = { version = "0.37", default-features = false, features = ["android-game
 winit = { version = "0.30", default-features = false }
 android_logger = "0.15"
 log = "0.4.34"
+jni = "0.21"

@@ -1,6 +1,9 @@
 package io.github.aminuddinihsan20.bitchord;
 
+import android.content.Intent;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.KeyEvent;
 import android.view.View;
 
@@ -25,6 +28,9 @@ public class MainActivity extends GameActivity {
 
     private static native void nativeEnter();
 
+    /** A sign-in the app asked for: 1 Google, 2 Spotify, 0 none. */
+    private static native int nativeTakeLoginRequest();
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -39,6 +45,19 @@ public class MainActivity extends GameActivity {
             return insets;
         });
         ViewCompat.requestApplyInsets(decor);
+
+        // The app asks for a sign-in by setting a request; open the sign-in page for it.
+        Handler main = new Handler(Looper.getMainLooper());
+        main.post(new Runnable() {
+            @Override
+            public void run() {
+                int site = nativeTakeLoginRequest();
+                if (site != 0) {
+                    startActivity(new Intent(MainActivity.this, LoginActivity.class).putExtra(LoginActivity.EXTRA_SITE, site));
+                }
+                main.postDelayed(this, 250);
+            }
+        });
 
         // Back closes what the app has open (Now Playing, then a page); with nothing to
         // close the app goes to the background and keeps playing, as music apps do.

@@ -36,4 +36,6 @@ dependencies {
     // its native "prefab" glue, android-activity has its own.
     implementation("androidx.games:games-activity:4.4.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
+    // Lets the sign-in WebView leave out the header that names the app.
+    implementation("androidx.webkit:webkit:1.14.0")
 }

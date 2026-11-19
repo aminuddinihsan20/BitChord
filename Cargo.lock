@@ -617,6 +617,7 @@ dependencies = [
  "android_logger",
  "bitchord",
  "eframe",
+ "jni 0.21.1",
  "log",
  "winit",
 ]
