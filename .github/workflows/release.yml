@@ -10,13 +10,32 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Run by hand, each platform can be left out (a release that only changes one of them).
   workflow_dispatch:
+    inputs:
+      windows:
+        description: Build Windows
+        type: boolean
+        default: true
+      linux:
+        description: Build Linux
+        type: boolean
+        default: true
+      macos:
+        description: Build macOS
+        type: boolean
+        default: true
+      android:
+        description: Build Android
+        type: boolean
+        default: true
 
 permissions:
   contents: write
 
 jobs:
   windows:
+    if: github.event_name != 'workflow_dispatch' || inputs.windows
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -98,6 +117,7 @@ jobs:
           if-no-files-found: error
 
   linux:
+    if: github.event_name != 'workflow_dispatch' || inputs.linux
     # The oldest supported Ubuntu, so the binary runs on older glibc too.
     runs-on: ubuntu-22.04
     steps:
@@ -143,6 +163,7 @@ jobs:
           if-no-files-found: error
 
   macos:
+    if: github.event_name != 'workflow_dispatch' || inputs.macos
     runs-on: macos-latest
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
@@ -203,6 +224,7 @@ jobs:
           if-no-files-found: error
 
   android:
+    if: github.event_name != 'workflow_dispatch' || inputs.android
     runs-on: ubuntu-latest
     env:
       ANDROID_NDK_VERSION: 30.0.16248370
@@ -281,7 +303,8 @@ jobs:
           if-no-files-found: error
 
   attach:
-    if: github.ref_type == 'tag'
+    # Whatever was built (a platform left out is skipped, not a failure); nothing if one failed.
+    if: github.ref_type == 'tag' && !cancelled() && !contains(needs.*.result, 'failure')
     needs: [windows, linux, macos, android]
     runs-on: ubuntu-latest
     steps:
