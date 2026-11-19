@@ -31,7 +31,7 @@ mod store {
     /// can be lost (stale parts were left behind in testing).
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    #[cfg(all(test, windows))]
+    #[cfg(test)]
     pub fn tests_entry(key: &str, part: usize) -> keyring::Entry {
         entry(key, part).unwrap()
     }
@@ -63,6 +63,13 @@ mod store {
 
     pub fn set(key: &str, secret: &[u8]) -> anyhow::Result<()> {
         let _one = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // The Keychain has no such limit, and each extra item is one more access prompt
+        // for a build without a stable signature: one item, and any older parts removed.
+        // (`get` still reads a secret an earlier version split.)
+        if cfg!(target_os = "macos") {
+            entry(key, 0)?.set_secret(secret)?;
+            return delete_from(key, 1);
+        }
         // A secret of an exact multiple of CHUNK ends with an empty part, so reading knows where it stops.
         let mut parts: Vec<&[u8]> = secret.chunks(CHUNK).collect();
         if secret.len().is_multiple_of(CHUNK) {
@@ -265,5 +272,35 @@ mod unix_tests {
         super::delete("test", &dir);
         assert!(super::get("test", &dir).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A secret an earlier version split over `name`, `name #2`: still read whole.
+    #[test]
+    fn reads_old_chunked_secret() {
+        let key = format!("ytm-rs vault chunked test {}", std::process::id());
+        let (first, rest) = (vec![1u8; 2560], vec![2u8; 100]);
+        if super::store::tests_entry(&key, 0).set_secret(&first).is_err() {
+            return eprintln!("no credential store here; skipped");
+        }
+        super::store::tests_entry(&key, 1).set_secret(&rest).unwrap();
+        let got = super::store::get(&key).unwrap().unwrap();
+        super::store::delete(&key).unwrap();
+        assert_eq!(got, [first, rest].concat());
+    }
+
+    /// The Keychain takes a secret of any size, and every extra item is one more access
+    /// prompt for a build that isn't signed with a stable identity.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_keeps_a_secret_in_one_keychain_item() {
+        let key = format!("ytm-rs vault single test {}", std::process::id());
+        let secret = vec![7u8; 6000];
+        super::store::set(&key, &secret).unwrap();
+        let one = super::store::tests_entry(&key, 0).get_secret();
+        let second = super::store::tests_entry(&key, 1).get_secret();
+        assert_eq!(super::store::get(&key).unwrap().unwrap(), secret);
+        super::store::delete(&key).unwrap();
+        assert_eq!(one.unwrap().len(), 6000);
+        assert!(matches!(second, Err(keyring::Error::NoEntry)));
     }
 }
