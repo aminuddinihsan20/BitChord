@@ -140,6 +140,12 @@ impl App {
                 self.toast("Link copied");
             }
             Action::Download(track) => {
+                // Android: the folder to save to is chosen once, first.
+                if crate::platform::HAS_SAF && crate::downloads::tree().is_none() {
+                    let for_video = if self.playing_as().is_some_and(|s| s.id == track.id) { self.current_id().map(str::to_owned) } else { None };
+                    self.download_after_folder(track, for_video);
+                    return;
+                }
                 self.toast(format!("Downloading \u{201c}{}\u{201d}", track.title));
                 // The song version playing for a music video: that video plays the file too.
                 let for_video = if self.playing_as().is_some_and(|s| s.id == track.id) { self.current_id().map(str::to_owned) } else { None };

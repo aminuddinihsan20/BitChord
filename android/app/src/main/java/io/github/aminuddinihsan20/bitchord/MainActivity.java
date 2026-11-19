@@ -3,6 +3,8 @@ package io.github.aminuddinihsan20.bitchord;
 import android.Manifest;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.net.Uri;
+import android.provider.DocumentsContract;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -42,6 +44,15 @@ public class MainActivity extends GameActivity {
 
     private boolean hadMedia;
 
+    /** The next job the app asks of Java ("id kind arg" joined by U+001F), or empty. */
+    private static native String nativeTakeCall();
+
+    /** The answer to the job with this id. */
+    private static native void nativeAnswer(long id, boolean ok, String text);
+
+    private static final int REQUEST_FOLDER = 7;
+    private long folderCall;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -68,6 +79,10 @@ public class MainActivity extends GameActivity {
                     startPlaybackService();
                 }
                 hadMedia = media;
+                String call = nativeTakeCall();
+                if (call != null && !call.isEmpty()) {
+                    handleCall(call);
+                }
                 int site = nativeTakeLoginRequest();
                 if (site != 0) {
                     startActivity(new Intent(MainActivity.this, LoginActivity.class).putExtra(LoginActivity.EXTRA_SITE, site));
@@ -88,6 +103,71 @@ public class MainActivity extends GameActivity {
                 }
             }
         });
+    }
+
+    /** A job the app asked for: choosing a folder, listing music, copying files. */
+    private void handleCall(String line) {
+        String[] f = line.split("\u001f", 3);
+        if (f.length < 3) {
+            return;
+        }
+        final long id = Long.parseLong(f[0]);
+        String kind = f[1], arg = f[2];
+        Storage.Done done = (ok, text) -> nativeAnswer(id, ok, text);
+        switch (kind) {
+            case "pick-folder": {
+                Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                                | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
+                folderCall = id;
+                startActivityForResult(pick, REQUEST_FOLDER);
+                break;
+            }
+            case "scan":
+                Storage.scan(this, arg, done);
+                break;
+            case "fetch":
+                Storage.fetch(this, arg, done);
+                break;
+            case "export": {
+                String[] e = arg.split("\u001e", 4);
+                if (e.length < 4) {
+                    done.finish(false, "bad export request");
+                } else {
+                    Storage.export(this, e[0], e[1], e[2], e[3], done);
+                }
+                break;
+            }
+            default:
+                done.finish(false, "unknown request " + kind);
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQUEST_FOLDER || folderCall == 0) {
+            return;
+        }
+        long id = folderCall;
+        folderCall = 0;
+        Uri uri = resultCode == RESULT_OK && data != null ? data.getData() : null;
+        if (uri == null) {
+            nativeAnswer(id, false, "cancelled");
+            return;
+        }
+        try {
+            getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        } catch (SecurityException e) {
+            // Read-only is enough for music.
+            try {
+                getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } catch (SecurityException ignored) {
+                nativeAnswer(id, false, "no permission for that folder");
+                return;
+            }
+        }
+        nativeAnswer(id, true, uri + "\u001f" + DocumentsContract.getTreeDocumentId(uri));
     }
 
     @Override

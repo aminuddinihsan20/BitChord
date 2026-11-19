@@ -286,7 +286,8 @@ pub enum Resp {
     ServerQueue(ytm::ServerQueue),
     /// Upload finished: how many files went up, and which failed.
     Uploaded { done: usize, failed: Vec<String> },
-    Downloaded { title: String, path: PathBuf },
+    /// `copied`: Android's copy into the listener's chosen folder (its name, or why not).
+    Downloaded { title: String, path: PathBuf, copied: Option<Result<String, String>> },
     /// Every source's lyrics for a song (empty when nobody has them).
     Lyrics { video_id: String, lyrics: LyricsSet },
     Segments { video_id: String, segments: Vec<crate::sponsorblock::Segment> },
@@ -827,7 +828,14 @@ impl Backend {
                 }
                 Req::Download { track: t, for_video } => {
                     let path = self.download(&t, for_video).await?;
-                    Resp::Downloaded { title: t.title, path }
+                    // Android: a copy into the folder the listener chose.
+                    let copied = if cfg!(target_os = "android") {
+                        let from = path.clone();
+                        Some(tokio::task::spawn_blocking(move || crate::downloads::export(&from)).await?)
+                    } else {
+                        None
+                    };
+                    Resp::Downloaded { title: t.title, path, copied }
                 }
                 Req::Play { video_id, generation, at, report, song_of, song, track } => match self.start_playback(&video_id, song_of.as_ref(), song, track.as_ref(), generation, at, report).await {
                     Ok(()) => return Ok(None),
@@ -1357,7 +1365,7 @@ impl Backend {
 
     async fn open_stream(&self, video_id: &str, prefetch: bool, track: Option<&Track>) -> anyhow::Result<Arc<Shared>> {
         let id = video_id.to_owned();
-        if let Some(shared) = tokio::task::spawn_blocking(move || crate::downloads::open(&id)).await? {
+        if let Some(shared) = tokio::task::spawn_blocking(move || crate::local::open(&id).or_else(|| crate::downloads::open(&id))).await? {
             return Ok(shared);
         }
         let (source, s) = self.resolve(video_id, false, track, !self.disable_direct.load(Ordering::Relaxed), prefetch).await?;

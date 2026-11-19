@@ -133,3 +133,15 @@ extern "system" fn Java_io_github_aminuddinihsan20_bitchord_PlaybackService_nati
 extern "system" fn Java_io_github_aminuddinihsan20_bitchord_PlaybackService_nativeMediaCommand(_env: Jni, _class: Jni, code: i32, arg: i64) {
     bitchord::platform::push_media_command(code, arg);
 }
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_io_github_aminuddinihsan20_bitchord_MainActivity_nativeTakeCall(env: jni::JNIEnv, _class: Jni) -> jni::sys::jstring {
+    let line = bitchord::platform::take_call().map(|c| c.to_line()).unwrap_or_default();
+    env.new_string(line).map_or(std::ptr::null_mut(), |s| s.into_raw())
+}
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_io_github_aminuddinihsan20_bitchord_MainActivity_nativeAnswer(mut env: jni::JNIEnv, _class: jni::objects::JClass, id: i64, ok: u8, text: jni::objects::JString) {
+    let text: String = env.get_string(&text).map(Into::into).unwrap_or_default();
+    bitchord::platform::answer_call(id as u64, ok != 0, &text);
+}

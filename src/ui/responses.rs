@@ -16,6 +16,7 @@ use super::{Action, App, Dialog, HomeState, LibTab, MixFrom, Page, PlayingAs, Re
 impl App {
     pub(super) fn pump(&mut self, now: f64) {
         self.media_notification();
+        self.apply_storage();
         let cover = self.media_cover.lock().unwrap().take();
         // The listed track's art, with what plays's title, artists and length.
         if let Some((id, file)) = cover
@@ -281,9 +282,13 @@ impl App {
                     self.loading = false;
                 }
             }
-            Resp::Downloaded { title, path } => {
+            Resp::Downloaded { title, path, copied } => {
                 log::info!("downloaded to {}", path.display());
-                self.toast(format!("Downloaded \u{201c}{title}\u{201d}"));
+                self.toast(match copied {
+                    Some(Ok(folder)) => format!("Downloaded \u{201c}{title}\u{201d} to {folder}"),
+                    Some(Err(e)) => format!("Downloaded \u{201c}{title}\u{201d}, but couldn't copy it to your folder: {e}"),
+                    None => format!("Downloaded \u{201c}{title}\u{201d}"),
+                });
             }
             Resp::Uploaded { done, failed } => {
                 let songs = |n: usize| if n == 1 { "1 song".to_owned() } else { format!("{n} songs") };

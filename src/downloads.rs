@@ -33,13 +33,67 @@ struct State {
     /// Where the index is saved (the data dir's downloads.json).
     file: PathBuf,
     folder: PathBuf,
+    /// Android: the folder the listener chose (address and name), that every download is
+    /// also copied into. The songs themselves stay in the app's own storage to play from.
+    tree: Option<(String, String)>,
 }
 
 static STATE: LazyLock<RwLock<State>> =
-    LazyLock::new(|| RwLock::new(State { index: HashMap::new(), file: PathBuf::new(), folder: default_folder() }));
+    LazyLock::new(|| RwLock::new(State { index: HashMap::new(), file: PathBuf::new(), folder: default_folder(), tree: None }));
+
+fn format_tree(uri: &str, label: &str) -> String {
+    format!("{uri}\n{label}")
+}
+
+fn parse_tree(text: &str) -> Option<(String, String)> {
+    let (uri, label) = text.split_once('\n')?;
+    (!uri.is_empty()).then(|| (uri.to_owned(), label.trim().to_owned()))
+}
+
+fn export_mime(path: &Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("m4a") => "audio/mp4",
+        Some("webm") => "audio/webm",
+        _ => "application/octet-stream",
+    }
+}
+
+/// The activity's export request: address, file, name and type, joined by U+001E (the
+/// request line itself is joined by U+001F, which would be flattened inside the argument).
+fn export_arg(uri: &str, path: &Path, name: &str) -> String {
+    [uri, &path.display().to_string(), name, export_mime(path)].join("\u{1e}")
+}
+
+/// The folder chosen for downloads (address, name), on Android.
+pub fn tree() -> Option<(String, String)> {
+    STATE.read().unwrap().tree.clone()
+}
+
+pub fn set_tree(uri: &str, label: &str) {
+    let mut st = STATE.write().unwrap();
+    st.tree = Some((uri.to_owned(), label.to_owned()));
+    let file = st.file.with_file_name("download_tree");
+    let _ = std::fs::write(file, format_tree(uri, label));
+}
+
+/// Copy a downloaded file into the chosen folder (Android); the folder's name on success.
+pub fn export(path: &Path) -> Result<String, String> {
+    let (uri, label) = tree().ok_or("no download folder chosen")?;
+    let name = path.file_name().and_then(|n| n.to_str()).ok_or("the file has no name")?;
+    let arg = export_arg(&uri, path, name);
+    crate::platform::call("export", &arg, std::time::Duration::from_secs(300))?;
+    Ok(crate::local::folder_name(&label))
+}
 
 /// Music\BitChord.
 pub fn default_folder() -> PathBuf {
+    // Android: the app's own storage, where it can write and play from; the listener's
+    // chosen folder gets a copy of each download (see `export`).
+    if cfg!(target_os = "android")
+        && let Some(data) = std::env::var_os("YTM_DATA_DIR")
+    {
+        return PathBuf::from(data).join("downloads");
+    }
     let base = directories::UserDirs::new()
         .and_then(|u| u.audio_dir().map(Path::to_path_buf).or_else(|| Some(u.home_dir().join("Music"))))
         .unwrap_or_else(|| PathBuf::from("."));
@@ -52,6 +106,7 @@ pub fn init(data_dir: &Path, folder: &str) {
     let index = std::fs::read(&file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     let mut st = STATE.write().unwrap();
     st.index = index;
+    st.tree = std::fs::read_to_string(file.with_file_name("download_tree")).ok().and_then(|t| parse_tree(&t));
     st.file = file;
     st.folder = if folder.is_empty() { default_folder() } else { PathBuf::from(folder) };
 }
@@ -241,6 +296,31 @@ fn tag(path: &Path, t: &Track, cover: Option<Vec<u8>>) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::model::Link;
+
+    #[test]
+    fn the_chosen_download_folder_is_saved_as_two_lines_and_read_back() {
+        let text = format_tree("content://x/tree/primary%3AMusic%2FBitChord", "primary:Music/BitChord");
+        assert_eq!(parse_tree(&text), Some(("content://x/tree/primary%3AMusic%2FBitChord".to_owned(), "primary:Music/BitChord".to_owned())));
+        assert_eq!(parse_tree(""), None);
+        assert_eq!(parse_tree("only-one-line"), None);
+        assert_eq!(parse_tree("\nlabel"), None, "an empty address is no folder");
+    }
+
+    #[test]
+    fn an_export_request_keeps_its_four_parts_through_the_request_line() {
+        let arg = export_arg("content://x/tree/a", Path::new("/data/files/downloads/A - B.m4a"), "A - B.m4a");
+        let line = crate::platform::CallRequest { id: 3, kind: "export".into(), arg }.to_line();
+        let back = crate::platform::CallRequest::from_line(&line).unwrap();
+        let parts: Vec<&str> = back.arg.split('\u{1e}').collect();
+        assert_eq!(parts, ["content://x/tree/a", "/data/files/downloads/A - B.m4a", "A - B.m4a", "audio/mp4"]);
+    }
+
+    #[test]
+    fn an_exported_file_is_named_and_typed_by_its_extension() {
+        assert_eq!(export_mime(Path::new("/d/Adele - Hello.m4a")), "audio/mp4");
+        assert_eq!(export_mime(Path::new("/d/x.webm")), "audio/webm");
+        assert_eq!(export_mime(Path::new("/d/x")), "application/octet-stream");
+    }
 
     #[test]
     fn file_names_are_safe_on_windows() {

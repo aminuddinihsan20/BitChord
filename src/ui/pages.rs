@@ -74,6 +74,7 @@ pub fn page(app: &mut App, ui: &mut Ui, now: f64) {
             Page::Downloads => downloads(app, ui, now),
             Page::Settings => settings(app, ui),
             Page::Transfer => super::transfer::page(app, ui, now),
+            Page::LocalFolder(uri) => local_folder(app, ui, uri, now),
         }
         // Room to scroll the last rows clear of the player's frosted strip.
         ui.add_space(96.0);
@@ -1135,25 +1136,34 @@ fn library(app: &mut App, ui: &mut Ui, tab: LibTab, now: f64) {
 
 fn downloads(app: &mut App, ui: &mut Ui, now: f64) {
     page_title(ui, "Downloads");
+    if crate::platform::HAS_SAF {
+        local_music(app, ui);
+        ui.add_space(22.0);
+        ui.label(RichText::new("Downloaded songs").font(theme::bold(22.0)).color(theme::text()));
+    }
     let songs = crate::downloads::list();
     ui.add_space(4.0);
-    ui.label(
-        RichText::new(format!("{} songs \u{2022} {}", songs.len(), crate::downloads::folder().display()))
-            .font(theme::regular(13.0))
-            .color(theme::text_dim()),
-    );
+    let place = match crate::downloads::tree() {
+        Some((_, label)) if crate::platform::HAS_SAF => crate::local::folder_name(&label),
+        _ if crate::platform::HAS_SAF => "you choose a folder at your first download".to_owned(),
+        _ => crate::downloads::folder().display().to_string(),
+    };
+    ui.label(RichText::new(format!("{} songs \u{2022} {place}", songs.len())).font(theme::regular(13.0)).color(theme::text_dim()));
     ui.add_space(12.0);
     if songs.is_empty() {
         ui.label(RichText::new("No downloads yet").font(theme::semibold(16.0)).color(theme::text()));
         ui.add_space(4.0);
-        ui.label(
-            RichText::new("Right-click a song and choose Download to keep it on this computer, playable offline.")
-                .font(theme::regular(13.0))
-                .color(theme::text_dim()),
-        );
-        ui.add_space(10.0);
-        if pill(ui, "Open folder", Some(icon::FOLDER_OPEN), false).clicked() {
-            crate::downloads::open_folder();
+        let how = if crate::platform::HAS_SAF {
+            "Open a song's menu (the three dots) and choose Download to keep it, playable offline."
+        } else {
+            "Right-click a song and choose Download to keep it on this computer, playable offline."
+        };
+        ui.label(RichText::new(how).font(theme::regular(13.0)).color(theme::text_dim()));
+        if !crate::platform::HAS_SAF {
+            ui.add_space(10.0);
+            if pill(ui, "Open folder", Some(icon::FOLDER_OPEN), false).clicked() {
+                crate::downloads::open_folder();
+            }
         }
         return;
     }
@@ -1166,11 +1176,90 @@ fn downloads(app: &mut App, ui: &mut Ui, now: f64) {
             super::shuffle(&mut t);
             app.actions.push(Action::Play(t, 0));
         }
-        if pill(ui, "Open folder", Some(icon::FOLDER_OPEN), false).clicked() {
+        if !crate::platform::HAS_SAF && pill(ui, "Open folder", Some(icon::FOLDER_OPEN), false).clicked() {
             crate::downloads::open_folder();
         }
     });
     ui.add_space(12.0);
+    let rows = Rows::new(app, now);
+    list(ui, &rows, &app.liked, &songs, true, |_, _| None, ListCtx { sel: &mut app.selection, page: &app.page, own: false }, &mut app.actions);
+}
+
+/// "Music on this phone": the folders the listener added, each a collection of its own.
+/// Only these are read, so ringtones and system sounds never turn up.
+fn local_music(app: &mut App, ui: &mut Ui) {
+    ui.add_space(8.0);
+    ui.label(RichText::new("Music on this phone").font(theme::bold(22.0)).color(theme::text()));
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new("Add the folders you want, such as Japanese and English music. Only those are read: ringtones and other sounds on the phone stay out.")
+            .font(theme::regular(13.0))
+            .color(theme::text_dim()),
+    );
+    ui.add_space(10.0);
+    let folders = crate::local::folders();
+    for f in &folders {
+        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 64.0), Sense::click());
+        let resp = named(resp, &f.name);
+        let h = theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.contains_pointer(), 0.15);
+        ui.painter().rect_filled(rect, 14.0, theme::glass(0.07 + 0.04 * h));
+        widgets::icon_at(ui, pos2(rect.left() + 28.0, rect.center().y), icon::FOLDER_OPEN, 24.0, app.accent_color());
+        let looking = app.scanning(&f.uri);
+        let sub = if looking { "Looking for music\u{2026}".to_owned() } else { format!("{} song{}", f.songs, if f.songs == 1 { "" } else { "s" }) };
+        widgets::text_at(ui, pos2(rect.left() + 56.0, rect.center().y - 19.0), &f.name, theme::semibold(16.0), theme::text(), rect.width() - 96.0);
+        widgets::text_at(ui, pos2(rect.left() + 56.0, rect.center().y + 3.0), &sub, theme::regular(13.0), theme::text_dim(), rect.width() - 96.0);
+        widgets::icon_at(ui, pos2(rect.right() - 20.0, rect.center().y), icon::CHEVRON_RIGHT, 16.0, theme::text_faint());
+        if resp.clicked() {
+            app.actions.push(Action::Go(Page::LocalFolder(f.uri.clone())));
+        }
+        ui.add_space(8.0);
+    }
+    if pill(ui, if folders.is_empty() { "Add a music folder" } else { "Add another folder" }, Some(icon::FOLDER_OPEN), true).clicked() {
+        app.ask_folder(super::storage::Purpose::Music);
+    }
+}
+
+/// One folder of local music: its songs, and keeping it up to date.
+fn local_folder(app: &mut App, ui: &mut Ui, uri: &str, now: f64) {
+    let Some(name) = crate::local::name_of(uri) else {
+        page_title(ui, "Folder");
+        ui.label(RichText::new("This folder isn't added any more.").font(theme::regular(14.0)).color(theme::text_dim()));
+        return;
+    };
+    page_title(ui, &name);
+    let songs = crate::local::tracks(uri);
+    let looking = app.scanning(uri);
+    ui.add_space(4.0);
+    let sub = if looking { "Looking for music\u{2026}".to_owned() } else { format!("{} song{}", songs.len(), if songs.len() == 1 { "" } else { "s" }) };
+    ui.label(RichText::new(sub).font(theme::regular(13.0)).color(theme::text_dim()));
+    ui.add_space(12.0);
+    ui.horizontal_wrapped(|ui| {
+        if !songs.is_empty() {
+            if pill(ui, "Play", Some(icon::PLAY), true).clicked() {
+                app.actions.push(Action::Play(songs.clone(), 0));
+            }
+            if pill(ui, "Shuffle", Some(icon::SHUFFLE), false).clicked() {
+                let mut t = songs.clone();
+                super::shuffle(&mut t);
+                app.actions.push(Action::Play(t, 0));
+            }
+        }
+        if !looking && pill(ui, "Refresh", None, false).clicked() {
+            app.scan_folder(uri);
+        }
+        if pill(ui, "Remove", Some(icon::X), false).clicked() {
+            crate::local::remove_folder(uri);
+            app.toast(format!("{name} removed from BitChord. Its files stay on your phone."));
+            app.nav_back();
+        }
+    });
+    ui.add_space(12.0);
+    if songs.is_empty() {
+        if !looking {
+            ui.label(RichText::new("No music found in this folder.").font(theme::semibold(15.0)).color(theme::text()));
+        }
+        return;
+    }
     let rows = Rows::new(app, now);
     list(ui, &rows, &app.liked, &songs, true, |_, _| None, ListCtx { sel: &mut app.selection, page: &app.page, own: false }, &mut app.actions);
 }
@@ -1284,7 +1373,7 @@ fn settings_body(app: &mut App, ui: &mut Ui) {
     settings_search_bar(ui, &mut app.settings_search);
     settings_account(app, ui);
     settings_playback(app, ui);
-    settings_downloads(ui);
+    settings_downloads(app, ui);
     settings_lyrics(app, ui);
     settings_artists(app, ui);
     settings_appearance(app, ui);
@@ -1565,7 +1654,7 @@ fn live_sources(app: &App) -> String {
 }
 
 /// Settings › Downloads.
-fn settings_downloads(ui: &mut Ui) {
+fn settings_downloads(app: &mut App, ui: &mut Ui) {
     section_label(ui, "Downloads", None);
     if settings_group_shown(ui) {
         ui.label(
@@ -1576,6 +1665,19 @@ fn settings_downloads(ui: &mut Ui) {
         ui.add_space(12.0);
     }
     settings_card(ui, |ui| {
+        if crate::platform::HAS_SAF {
+            // Android: a folder chosen once; every download is copied into it.
+            let desc = match crate::downloads::tree() {
+                Some((_, label)) => format!("Downloads are saved to {}. Change it to save new ones elsewhere.", crate::local::folder_name(&label)),
+                None => "Not chosen yet: you're asked at your first download, once.".to_owned(),
+            };
+            setting_row(ui, "Download folder", Some(&desc), |ui| {
+                if pill(ui, "Change", Some(icon::FOLDER_OPEN), false).clicked() {
+                    app.ask_folder(super::storage::Purpose::Downloads);
+                }
+            });
+            return;
+        }
         let folder = crate::downloads::folder().display().to_string();
         setting_row(ui, "Download folder", Some(&folder), |ui| {
             if crate::platform::HAS_FILE_DIALOG {

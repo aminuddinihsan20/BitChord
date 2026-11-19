@@ -5,6 +5,10 @@ pub const HAS_TRAY: bool = cfg!(not(target_os = "android"));
 
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
+/// Android's folder chooser (Storage Access Framework): downloads go to a folder chosen
+/// once, and music is read from folders chosen the same way.
+pub const HAS_SAF: bool = cfg!(target_os = "android");
+
 /// A system dialog to pick a folder or files with.
 pub const HAS_FILE_DIALOG: bool = cfg!(not(target_os = "android"));
 
@@ -72,6 +76,11 @@ pub fn set_wake(ctx: &egui::Context) {
     if w.is_none() {
         *w = Some(ctx.clone());
     }
+}
+
+/// Wake the UI to draw a frame (from any thread, once a frame has been drawn).
+pub fn wake_ui() {
+    wake();
 }
 
 fn wake() {
@@ -298,12 +307,110 @@ pub fn take_media_commands() -> Vec<MediaCommand> {
     std::mem::take(&mut *MEDIA_COMMANDS.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
+/// A job the app asks the activity (Java) to do, and waits for: choosing a folder,
+/// copying a file into it, listing music, fetching a file. `kind` names it, `arg` is its
+/// one argument; the activity answers with [`answer_call`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallRequest {
+    pub id: u64,
+    pub kind: String,
+    pub arg: String,
+}
+
+impl CallRequest {
+    pub fn to_line(&self) -> String {
+        format!("{}{FIELD}{}{FIELD}{}", self.id, self.kind.replace([FIELD, '\n'], " "), self.arg.replace(FIELD, " "))
+    }
+
+    pub fn from_line(line: &str) -> Option<CallRequest> {
+        let mut f = line.splitn(3, FIELD);
+        Some(CallRequest { id: f.next()?.parse().ok()?, kind: f.next()?.to_owned(), arg: f.next()?.to_owned() })
+    }
+}
+
+#[derive(Default)]
+struct Calls {
+    next: u64,
+    queue: std::collections::VecDeque<CallRequest>,
+    waiting: std::collections::HashMap<u64, std::sync::mpsc::Sender<Result<String, String>>>,
+}
+
+static CALLS: std::sync::Mutex<Option<Calls>> = std::sync::Mutex::new(None);
+
+fn with_calls<R>(f: impl FnOnce(&mut Calls) -> R) -> R {
+    f(CALLS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Calls::default))
+}
+
+/// Ask the activity for `kind` and wait up to `timeout` for the answer.
+pub fn call(kind: &str, arg: &str, timeout: std::time::Duration) -> Result<String, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let id = with_calls(|c| {
+        c.next += 1;
+        let id = c.next;
+        c.waiting.insert(id, tx);
+        c.queue.push_back(CallRequest { id, kind: kind.to_owned(), arg: arg.to_owned() });
+        id
+    });
+    let answer = rx.recv_timeout(timeout).unwrap_or_else(|_| Err(format!("{kind} timed out")));
+    // Withdraw it: an unanswered request is not left for the activity to find later.
+    with_calls(|c| {
+        c.waiting.remove(&id);
+        c.queue.retain(|r| r.id != id);
+    });
+    answer
+}
+
+/// The activity polls this for the next request.
+pub fn take_call() -> Option<CallRequest> {
+    with_calls(|c| c.queue.pop_front())
+}
+
+/// The activity's answer to request `id`; one nobody waits for any more is dropped.
+pub fn answer_call(id: u64, ok: bool, text: &str) {
+    if let Some(tx) = with_calls(|c| c.waiting.remove(&id)) {
+        let _ = tx.send(if ok { Ok(text.to_owned()) } else { Err(text.to_owned()) });
+    }
+}
+
+/// A music file found in a folder the listener chose.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalFile {
+    /// Where Android keeps it (a `content://` address).
+    pub uri: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub duration_ms: u64,
+    pub size: u64,
+}
+
+impl LocalFile {
+    /// The activity's listing: one file per line, fields joined by U+001F.
+    pub fn parse_list(text: &str) -> Vec<LocalFile> {
+        text.lines()
+            .filter_map(|line| {
+                let mut f = line.split(FIELD);
+                Some(LocalFile {
+                    uri: f.next().filter(|u| !u.is_empty())?.to_owned(),
+                    title: f.next()?.to_owned(),
+                    artist: f.next()?.to_owned(),
+                    album: f.next()?.to_owned(),
+                    duration_ms: f.next()?.parse().ok()?,
+                    size: f.next()?.parse().ok()?,
+                })
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// The login tests share the login statics.
     static LOGIN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// The call tests share the call queue.
+    static CALL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn insets_in_pixels_become_points() {
@@ -431,6 +538,64 @@ mod tests {
         assert!(in_background());
         set_background(false);
         assert!(!in_background());
+    }
+
+    #[test]
+    fn a_call_to_the_activity_waits_for_its_answer() {
+        let _one = CALL.lock().unwrap_or_else(|e| e.into_inner());
+        let waiting = std::thread::spawn(|| call("scan", "tree-uri", std::time::Duration::from_secs(5)));
+        let request = loop {
+            if let Some(r) = take_call() {
+                break r;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert_eq!((request.kind.as_str(), request.arg.as_str()), ("scan", "tree-uri"));
+        assert!(take_call().is_none(), "taken once");
+        answer_call(request.id, true, "3 files");
+        assert_eq!(waiting.join().unwrap(), Ok("3 files".to_owned()));
+    }
+
+    #[test]
+    fn a_failed_call_carries_the_reason() {
+        let _one = CALL.lock().unwrap_or_else(|e| e.into_inner());
+        let waiting = std::thread::spawn(|| call("fetch", "doc", std::time::Duration::from_secs(5)));
+        let request = loop {
+            if let Some(r) = take_call() {
+                break r;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        answer_call(request.id, false, "permission denied");
+        assert_eq!(waiting.join().unwrap(), Err("permission denied".to_owned()));
+    }
+
+    #[test]
+    fn a_call_nobody_answers_times_out_and_leaves_nothing_behind() {
+        let _one = CALL.lock().unwrap_or_else(|e| e.into_inner());
+        let r = call("export", "x", std::time::Duration::from_millis(40));
+        assert!(r.is_err(), "{r:?}");
+        assert!(take_call().is_none(), "the abandoned request is not left for the activity");
+        // A late answer to it is ignored.
+        answer_call(u64::MAX, true, "late");
+    }
+
+    #[test]
+    fn a_request_line_survives_the_trip_and_a_stray_separator_does_not_break_it() {
+        let line = CallRequest { id: 7, kind: "export".into(), arg: "a\u{1f}b".into() }.to_line();
+        let back = CallRequest::from_line(&line).unwrap();
+        assert_eq!((back.id, back.kind.as_str()), (7, "export"));
+        assert!(CallRequest::from_line("").is_none());
+        assert!(CallRequest::from_line("x\u{1f}y").is_none());
+    }
+
+    #[test]
+    fn local_files_are_listed_one_per_line() {
+        let text = "content://t/a\u{1f}Tabun\u{1f}YOASOBI\u{1f}THE BOOK\u{1f}261000\u{1f}123456\ncontent://t/b\u{1f}\u{1f}\u{1f}\u{1f}0\u{1f}9\nbroken line\n";
+        let files = LocalFile::parse_list(text);
+        assert_eq!(files.len(), 2, "a line without all its fields is skipped");
+        assert_eq!(files[0], LocalFile { uri: "content://t/a".into(), title: "Tabun".into(), artist: "YOASOBI".into(), album: "THE BOOK".into(), duration_ms: 261_000, size: 123_456 });
+        assert_eq!(files[1].title, "");
     }
 
     #[test]

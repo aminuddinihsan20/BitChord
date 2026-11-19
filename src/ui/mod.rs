@@ -24,6 +24,7 @@ mod playback;
 mod queue;
 mod responses;
 mod shell;
+mod storage;
 #[cfg(target_os = "android")]
 mod shared;
 #[cfg(target_os = "android")]
@@ -72,6 +73,8 @@ pub enum Page {
     Settings,
     /// Transfer from Spotify.
     Transfer,
+    /// Music from one folder the listener chose (its address).
+    LocalFolder(String),
 }
 
 #[derive(Clone, Copy, PartialEq, Hash, Debug)]
@@ -344,6 +347,10 @@ pub struct App {
     uploads: Option<Vec<Track>>,
     /// Files chosen in the upload dialog, handed over from its thread.
     picked_uploads: Arc<std::sync::Mutex<Option<Vec<std::path::PathBuf>>>>,
+    /// Android: answers from the folder chooser and the music lists (see `storage`).
+    storage: storage::Shared,
+    /// A download held until a download folder is chosen.
+    pending_download: Option<(Track, Option<String>)>,
     liked: HashSet<String>,
     /// Songs whose unlike is queued and hasn't gone through yet.
     unliking: HashMap<String, Track>,
@@ -613,6 +620,7 @@ impl App {
         // and keep the Start menu link pointing at this exe.
         crate::appicon::sync_shortcuts(app_icon, backend.data_dir());
         crate::downloads::init(backend.data_dir(), &get("download_dir").unwrap_or_default());
+        crate::local::init(backend.data_dir());
         crate::lastfm::init(backend.data_dir());
         let logged_in = backend.is_logged_in();
         // Before any request: a song started at launch (dev hooks) must see this setting.
@@ -690,6 +698,8 @@ impl App {
             history: None,
             uploads: None,
             picked_uploads: Default::default(),
+            storage: Default::default(),
+            pending_download: None,
             liked: HashSet::new(),
             unliking: HashMap::new(),
             selection: Selection::default(),

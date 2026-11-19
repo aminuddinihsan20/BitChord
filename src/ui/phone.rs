@@ -29,7 +29,7 @@ impl Tab {
             Page::Home | Page::New => Tab::Home,
             Page::Search(_) => Tab::Search,
             Page::Library(_) => Tab::Library,
-            Page::Downloads => Tab::Downloads,
+            Page::Downloads | Page::LocalFolder(_) => Tab::Downloads,
             Page::Album(_) | Page::Playlist(_) | Page::Artist(_) | Page::Settings | Page::Transfer => last,
         }
     }
@@ -247,6 +247,12 @@ mod tests {
             assert_eq!(Tab::of(&tab.page(), Tab::Home), tab);
             assert!(Tab::is_root(&tab.page()));
         }
+    }
+
+    #[test]
+    fn a_local_folder_belongs_to_the_downloads_tab_and_has_a_back() {
+        assert_eq!(Tab::of(&Page::LocalFolder("content://t/jp".into()), Tab::Home), Tab::Downloads);
+        assert!(!Tab::is_root(&Page::LocalFolder("content://t/jp".into())));
     }
 
     #[test]
