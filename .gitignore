@@ -22,3 +22,6 @@ android/local.properties
 /out/
 /dmg/
 *.dmg
+
+# Rencana dan rancangan kerja: lokal saja, tidak untuk repo.
+docs/superpowers/
