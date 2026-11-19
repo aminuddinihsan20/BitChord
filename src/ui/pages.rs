@@ -1649,6 +1649,12 @@ fn settings_playback(app: &mut App, ui: &mut Ui) {
             output_device_picker(app, ui);
         });
         divider(ui);
+        setting_row(ui, "Spatial audio", Some("Makes stereo songs sound like they surround you, for headphones: a wider stage, a little room around it and the way your head shades each ear. Voices stay in the middle. Not head-tracked, and not Dolby Atmos (that plays as it is when a song has it)."), |ui| {
+            if toggle(ui, &mut app.spatial, "Spatial audio").changed() {
+                app.set_crossfade();
+            }
+        });
+        divider(ui);
         setting_row(ui, "Automix", Some("Slide from one song into the next the way a DJ would: both hold their level for a moment, then swap in one smooth move, instead of a straight fade. The mix picks its own length, in phrases of 8 or 16 bars (16 on long songs), following the beat it hears."), |ui| {
             if toggle(ui, &mut app.automix, "Automix").changed() {
                 app.set_crossfade();

@@ -85,6 +85,8 @@ pub struct AudioStatus {
     crossfade_ms: AtomicU32,
     /// DJ-style handoff rather than a straight-line crossfade (see `Ramp`).
     automix: AtomicBool,
+    /// Spatial audio for headphones (see `crate::spatial`).
+    spatial: AtomicBool,
     /// Tempo estimate of the playing song in BPM (f32 bits); 0 until one is heard.
     bpm: AtomicU32,
     mix_generation: AtomicU64,
@@ -350,6 +352,9 @@ struct Meter<S> {
     analysis: Arc<OnceLock<Option<f32>>>,
     analysis_acc: f32,
     fx: Option<MixFx>,
+    spatial: crate::spatial::Spatial,
+    /// The right ear's sample of a pair already worked out, for the next call.
+    spatial_right: Option<f32>,
 }
 
 /// How many windows Automix reads for a beat before it settles for the plain length.
@@ -447,7 +452,8 @@ impl<S: rodio::Source> Meter<S> {
         if let Some(fx) = &mut fx {
             fx.begin(analysis.get().copied().flatten().unwrap_or(0.0));
         }
-        let mut m = Self { inner, status, fade_out, seen_out: 0, ramp: None, mix, acc: 0.0, n: 0, smooth: 0.0, tempo, analysis, analysis_acc: 0.0, fx };
+        let spatial = crate::spatial::Spatial::new(inner.sample_rate().get());
+        let mut m = Self { inner, status, fade_out, seen_out: 0, ramp: None, mix, acc: 0.0, n: 0, smooth: 0.0, tempo, analysis, analysis_acc: 0.0, fx, spatial, spatial_right: None };
         if fade_in_ms > 0 {
             m.ramp = Some(if mix { Ramp::MixIn { at: 0, len: m.samples(fade_in_ms) } } else { Ramp::In { at: 0, len: m.samples(fade_in_ms) } });
         }
@@ -479,7 +485,25 @@ impl<S: rodio::Source> Iterator for Meter<S> {
         {
             return None;
         }
-        let mut s = self.inner.next()?;
+        let mut s = match self.spatial_right.take() {
+            Some(right) => right,
+            None => {
+                let left = self.inner.next()?;
+                // Stereo with spatial audio on: the pair is worked out together.
+                if self.status.spatial.load(Ordering::Relaxed) && self.inner.channels().get() == 2 {
+                    match self.inner.next() {
+                        Some(right) => {
+                            let (l, r) = self.spatial.frame(left, right);
+                            self.spatial_right = Some(r);
+                            l
+                        }
+                        None => left,
+                    }
+                } else {
+                    left
+                }
+            }
+        };
         if !self.tempo.done {
             self.analysis_acc += s * s;
         }
@@ -540,6 +564,8 @@ impl<S: rodio::Source> rodio::Source for Meter<S> {
     }
     fn try_seek(&mut self, pos: Duration) -> Result<(), rodio::source::SeekError> {
         self.inner.try_seek(pos)?;
+        self.spatial_right = None;
+        self.spatial.reset();
         self.ramp = None;
         self.acc = 0.0;
         self.analysis_acc = 0.0;
@@ -587,6 +613,11 @@ impl AudioHandle {
     /// Automix's handoff shape for the crossfade (see `Ramp::MixIn`).
     pub fn set_automix(&self, on: bool) {
         self.status.automix.store(on, Ordering::Relaxed);
+    }
+
+    /// Spatial audio for headphones, from the next sound on.
+    pub fn set_spatial(&self, on: bool) {
+        self.status.spatial.store(on, Ordering::Relaxed);
     }
 
     pub fn set_volume(&self, v: f32) {
@@ -1310,6 +1341,42 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stereo buffer with a tone in the left ear only, 48 kHz.
+    fn left_only(frames: usize) -> rodio::buffer::SamplesBuffer {
+        use std::num::NonZero;
+        let samples: Vec<f32> = (0..frames).flat_map(|i| [(i as f32 * 0.07).sin() * 0.6, 0.0]).collect();
+        rodio::buffer::SamplesBuffer::new(NonZero::new(2).unwrap(), NonZero::new(48_000).unwrap(), samples)
+    }
+
+    fn right_ear_energy(status: Arc<AudioStatus>) -> f32 {
+        let mut meter = Meter::new(left_only(4_000), status, 0, Arc::new(AtomicU32::new(0)), false, Default::default());
+        let out: Vec<f32> = std::iter::from_fn(|| meter.next()).collect();
+        assert_eq!(out.len(), 8_000, "as many samples out as in");
+        out.chunks(2).skip(500).map(|f| f[1] * f[1]).sum()
+    }
+
+    #[test]
+    fn spatial_audio_off_leaves_a_stereo_song_as_it_is() {
+        assert_eq!(right_ear_energy(Arc::new(AudioStatus::default())), 0.0);
+    }
+
+    #[test]
+    fn spatial_audio_on_lets_the_other_ear_hear_a_left_sound_and_keeps_every_sample() {
+        let status = Arc::new(AudioStatus::default());
+        status.spatial.store(true, Ordering::Relaxed);
+        assert!(right_ear_energy(status) > 0.0);
+    }
+
+    #[test]
+    fn spatial_audio_leaves_a_mono_file_alone() {
+        use std::num::NonZero;
+        let status = Arc::new(AudioStatus::default());
+        status.spatial.store(true, Ordering::Relaxed);
+        let mono = rodio::buffer::SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(48_000).unwrap(), vec![0.5; 100]);
+        let mut meter = Meter::new(mono, status, 0, Arc::new(AtomicU32::new(0)), false, Default::default());
+        assert!(std::iter::from_fn(|| meter.next()).all(|s| s == 0.5));
+    }
 
     #[test]
     fn outgoing_clock_survives_incoming_position_reset() {

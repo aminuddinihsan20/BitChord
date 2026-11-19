@@ -359,6 +359,7 @@ impl App {
     pub(crate) fn set_crossfade(&self) {
         // Automix is a crossfade with its own shape, so it needs the length too.
         self.audio.set_automix(self.automix);
+        self.audio.set_spatial(self.spatial);
         self.audio.set_crossfade(if self.crossfade || self.automix { self.crossfade_secs } else { 0 });
     }
 
