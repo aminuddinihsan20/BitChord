@@ -23,10 +23,17 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-const LATEST: &str = "https://api.github.com/repos/grapedjuice/ytm-rs/releases/latest";
-const ALL_RELEASES: &str = "https://api.github.com/repos/grapedjuice/ytm-rs/releases";
-const BY_TAG: &str = "https://api.github.com/repos/grapedjuice/ytm-rs/releases/tags/v";
-pub const RELEASES: &str = "https://github.com/grapedjuice/ytm-rs/releases";
+/// The GitHub repository whose releases this copy updates from.
+macro_rules! repo {
+    () => {
+        "aminuddinihsan20/BitChord-PC-Official"
+    };
+}
+
+const LATEST: &str = concat!("https://api.github.com/repos/", repo!(), "/releases/latest");
+const ALL_RELEASES: &str = concat!("https://api.github.com/repos/", repo!(), "/releases");
+const BY_TAG: &str = concat!("https://api.github.com/repos/", repo!(), "/releases/tags/v");
+pub const RELEASES: &str = concat!("https://github.com/", repo!(), "/releases");
 
 /// Release notes by version: `None` while fetching or when there are none.
 type Notes = Arc<Mutex<std::collections::HashMap<String, Option<String>>>>;
@@ -37,7 +44,7 @@ pub enum State {
     Checking,
     UpToDate,
     Downloading { version: String, percent: u8 },
-    /// `installer` is the setup exe, or for the portable build the new ytm-rs.exe.
+    /// `installer` is the setup exe, or for the portable build the new bitchord.exe.
     Ready { version: String, installer: PathBuf },
     Failed(String),
 }
@@ -71,7 +78,7 @@ pub fn installed() -> bool {
     exe.parent().is_some_and(|d| d.join(marker).exists())
 }
 
-/// The `.app` bundle a binary is in (`X.app/Contents/MacOS/ytm-rs`).
+/// The `.app` bundle a binary is in (`X.app/Contents/MacOS/bitchord`).
 fn bundle_of(exe: &Path) -> Option<&Path> {
     exe.ancestors().nth(3).filter(|a| a.extension().is_some_and(|x| x == "app"))
 }
@@ -82,7 +89,7 @@ fn asset_name(version: &str) -> String {
     let arch = std::env::consts::ARCH;
     if cfg!(target_os = "linux") {
         let kind = if portable { "portable-" } else { "" };
-        return format!("ytm-rs-{kind}{version}-linux-{arch}.tar.gz");
+        return format!("bitchord-{kind}{version}-linux-{arch}.tar.gz");
     }
     // ARM64 Windows builds have their own assets; x64 keeps the original names.
     let (suffix, setup) = if cfg!(target_os = "macos") {
@@ -90,7 +97,7 @@ fn asset_name(version: &str) -> String {
     } else {
         (if cfg!(target_arch = "aarch64") { "-arm64" } else { "" }.to_owned(), "exe")
     };
-    if portable { format!("ytm-rs-portable-{version}{suffix}.zip") } else { format!("ytm-rs-setup-{version}{suffix}.{setup}") }
+    if portable { format!("bitchord-portable-{version}{suffix}.zip") } else { format!("bitchord-setup-{version}{suffix}.{setup}") }
 }
 
 /// The portable build's folder: the download ships a `portable.txt` beside the exe
@@ -182,7 +189,7 @@ impl Updater {
         None
     }
 
-    /// How many times ytm-rs has been downloaded: every release asset's GitHub download
+    /// How many times bitchord has been downloaded: every release asset's GitHub download
     /// count added up (installers, plus the copies the updater fetched). Fetched in the
     /// background the first time it's asked for; `None` until it arrives.
     pub fn downloads(&self) -> Option<u64> {
@@ -301,7 +308,7 @@ impl Updater {
                 }
             }
         }
-        let unpacked = self.dir.join(format!("ytm-rs-{version}"));
+        let unpacked = self.dir.join(format!("bitchord-{version}"));
         let ready = if cfg!(target_os = "macos") && !portable {
             open_dmg(&path, &unpacked)?
         } else if portable || cfg!(unix) {
@@ -384,7 +391,7 @@ fn swap_exe(new: &Path, exe: &Path, relaunch: bool) {
 #[cfg(unix)]
 fn replace_binary(new: &Path, exe: &Path, relaunch: bool) {
     use std::os::unix::fs::PermissionsExt;
-    let tmp = exe.with_file_name(".ytm-rs.new");
+    let tmp = exe.with_file_name(".bitchord.new");
     if std::env::var_os("YTM_UPDATE_DRYRUN").is_some() {
         log::info!("update (dry run): {} over {}", new.display(), exe.display());
         return;
@@ -410,7 +417,7 @@ fn replace_binary(new: &Path, exe: &Path, relaunch: bool) {
 #[cfg(target_os = "macos")]
 fn replace_bundle(new: &Path, app: &Path, relaunch: bool) {
     let parent = app.parent().unwrap_or(Path::new("/"));
-    let (tmp, old) = (parent.join(".ytm-rs.app.new"), parent.join(".ytm-rs.app.old"));
+    let (tmp, old) = (parent.join(".bitchord.app.new"), parent.join(".bitchord.app.old"));
     if std::env::var_os("YTM_UPDATE_DRYRUN").is_some() {
         log::info!("update (dry run): {} in place of {}", new.display(), app.display());
         return;
@@ -448,9 +455,9 @@ fn open_dmg(dmg: &Path, dir: &Path) -> anyhow::Result<PathBuf> {
     std::fs::create_dir_all(&mnt)?;
     let attached = std::process::Command::new("hdiutil").args(["attach", "-nobrowse", "-readonly", "-noautoopen", "-quiet", "-mountpoint"]).arg(&mnt).arg(dmg).status()?;
     anyhow::ensure!(attached.success(), "couldn't open {}", dmg.display());
-    let copied = std::process::Command::new("ditto").arg(mnt.join("ytm-rs.app")).arg(dir.join("ytm-rs.app")).status();
+    let copied = std::process::Command::new("ditto").arg(mnt.join("bitchord.app")).arg(dir.join("bitchord.app")).status();
     let _ = std::process::Command::new("hdiutil").args(["detach", "-quiet"]).arg(&mnt).status();
-    let exe = dir.join("ytm-rs.app/Contents/MacOS/ytm-rs");
+    let exe = dir.join("bitchord.app/Contents/MacOS/bitchord");
     anyhow::ensure!(copied.is_ok_and(|s| s.success()) && exe.exists(), "couldn't copy the app out of {}", dmg.display());
     Ok(exe)
 }
@@ -476,14 +483,14 @@ fn unzip_exe(zip: &Path, dir: &Path) -> anyhow::Result<PathBuf> {
     }
     let status = cmd.status()?;
     #[cfg(windows)]
-    let exe = dir.join("ytm-rs.exe");
+    let exe = dir.join("bitchord.exe");
     // Everything is in one top-level folder: the binary, or on macOS the app bundle.
     #[cfg(not(windows))]
     let exe = std::fs::read_dir(dir)?
         .flatten()
-        .flat_map(|e| [e.path().join("ytm-rs"), e.path().join("ytm-rs.app/Contents/MacOS/ytm-rs")])
+        .flat_map(|e| [e.path().join("bitchord"), e.path().join("bitchord.app/Contents/MacOS/bitchord")])
         .find(|p| p.is_file())
-        .unwrap_or_else(|| dir.join("ytm-rs"));
+        .unwrap_or_else(|| dir.join("bitchord"));
     anyhow::ensure!(status.success() && exe.exists(), "couldn't unpack {}", zip.display());
     Ok(exe)
 }
@@ -515,7 +522,48 @@ fn client() -> anyhow::Result<reqwest::Client> {
 
 #[cfg(test)]
 mod tests {
-    use super::newer;
+    use super::*;
+
+    #[test]
+    fn release_feed_is_this_repo() {
+        assert_eq!(LATEST, "https://api.github.com/repos/aminuddinihsan20/BitChord-PC-Official/releases/latest");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_asset_matches_release_workflow() {
+        let arch = std::env::consts::ARCH;
+        assert_eq!(asset_name("2.0.1"), format!("bitchord-setup-2.0.1-macos-{arch}.dmg"));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_asset_matches_release_workflow() {
+        assert_eq!(asset_name("2.0.1"), "bitchord-2.0.1-linux-x86_64.tar.gz");
+    }
+
+    #[test]
+    #[cfg(all(windows, not(target_arch = "aarch64")))]
+    fn windows_asset_matches_installer() {
+        assert_eq!(asset_name("2.0.1"), "bitchord-setup-2.0.1.exe");
+    }
+
+    /// The Linux tarball's layout (release.yml): one folder holding the `bitchord` binary.
+    #[test]
+    #[cfg(unix)]
+    fn unpacks_the_bitchord_binary_from_a_release_tarball() {
+        let root = std::env::temp_dir().join(format!("bitchord-unpack-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let src = root.join("src/bitchord-2.0.1-linux-x86_64");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("bitchord"), b"binary").unwrap();
+        let tarball = root.join("bitchord-2.0.1-linux-x86_64.tar.gz");
+        let made = std::process::Command::new("tar").arg("-czf").arg(&tarball).arg("-C").arg(root.join("src")).arg("bitchord-2.0.1-linux-x86_64").status().unwrap();
+        assert!(made.success());
+        let exe = unzip_exe(&tarball, &root.join("out")).unwrap();
+        assert_eq!(exe, root.join("out/bitchord-2.0.1-linux-x86_64/bitchord"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn version_order() {
