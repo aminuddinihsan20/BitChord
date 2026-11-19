@@ -1008,6 +1008,21 @@ fn shelf_page_target(starts: &[usize], step: f32, from: f32, nudge: i32) -> f32 
     next as f32 * step
 }
 
+/// Which way a touch drag is going once it has moved far enough to tell: `Some(true)`
+/// horizontal, `Some(false)` vertical, `None` while it is still within the slop.
+pub fn drag_axis(delta: Vec2) -> Option<bool> {
+    const SLOP: f32 = 10.0;
+    (delta.length() > SLOP).then(|| delta.x.abs() > delta.y.abs())
+}
+
+/// A shelf follows a finger only when the drag is horizontal; a vertical one belongs to
+/// the page. State kept between frames: where the shelf was, and the axis once known.
+#[derive(Clone, Copy)]
+struct ShelfDrag {
+    start_offset: f32,
+    axis: Option<bool>,
+}
+
 /// Horizontal scroller that animates between aligned pages of cards or song columns.
 pub fn h_scroll<R>(ui: &mut Ui, id: &str, nudge: i32, count: usize, item_width: f32, gap: f32, add: impl FnOnce(&mut Ui) -> R) -> (R, bool) {
     let sid = egui::Id::unique(("hscroll", id));
@@ -1034,6 +1049,18 @@ pub fn h_scroll<R>(ui: &mut Ui, id: &str, nudge: i32, count: usize, item_width: 
         ui.ctx().data_mut(|d| d.insert_temp(target_id, t));
     }
     let mut area = egui::ScrollArea::horizontal().id_salt(sid).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
+    let phone = crate::platform::phone();
+    let drag_id = sid.with("shelf-drag");
+    let held_id = sid.with("shelf-held");
+    if phone {
+        // The shelf's own drag would take every swipe that starts on it, vertical ones
+        // too, and the page (mostly shelves) would hardly scroll: it follows the finger
+        // itself below, and only when the swipe is horizontal.
+        area = area.scroll_source(egui::scroll_area::ScrollSource { drag: egui::scroll_area::DragScroll::Never, ..Default::default() });
+        if let Some(x) = ui.ctx().data(|d| d.get_temp::<f32>(held_id)) {
+            area = area.horizontal_scroll_offset(x);
+        }
+    }
     if let Some(t) = target {
         let v = ui.ctx().animate_value_with_time(anim_id, t, 0.35 * theme::SPEED);
         area = area.horizontal_scroll_offset(v);
@@ -1048,7 +1075,47 @@ pub fn h_scroll<R>(ui: &mut Ui, id: &str, nudge: i32, count: usize, item_width: 
         add(ui)
     }).inner);
     ui.ctx().data_mut(|d| d.insert_temp(viewport_id, out.inner_rect.width()));
+    if phone {
+        follow_horizontal_swipe(ui.ctx(), out.inner_rect, out.state.clamped_offset().x, (out.content_size.x - out.inner_rect.width()).max(0.0), drag_id, held_id, target_id, anim_id);
+    }
     (out.inner, reached_end)
+}
+
+/// Move a shelf with a finger that started on it and went horizontally; let it glide on
+/// when released while still moving. A vertical swipe is left to the page.
+#[allow(clippy::too_many_arguments)]
+fn follow_horizontal_swipe(ctx: &egui::Context, rect: Rect, offset: f32, max: f32, drag_id: egui::Id, held_id: egui::Id, target_id: egui::Id, anim_id: egui::Id) {
+    let (origin, latest, down, velocity) = ctx.input(|i| (i.pointer.press_origin(), i.pointer.latest_pos(), i.pointer.primary_down(), i.pointer.velocity()));
+    let drag: Option<ShelfDrag> = ctx.data(|d| d.get_temp(drag_id));
+    match (down, origin.filter(|o| rect.contains(*o)), latest) {
+        (true, Some(origin), Some(now)) => {
+            let mut d = drag.unwrap_or(ShelfDrag { start_offset: offset, axis: None });
+            let delta = now - origin;
+            if d.axis.is_none() {
+                d.axis = drag_axis(delta);
+            }
+            if d.axis == Some(true) {
+                ctx.data_mut(|data| data.insert_temp(held_id, (d.start_offset - delta.x).clamp(0.0, max)));
+                ctx.request_repaint();
+            }
+            ctx.data_mut(|data| data.insert_temp(drag_id, d));
+        }
+        _ => {
+            if let Some(d) = drag {
+                ctx.data_mut(|data| {
+                    data.remove::<ShelfDrag>(drag_id);
+                    data.remove::<f32>(held_id);
+                });
+                if d.axis == Some(true) {
+                    // Released while moving: glide on, easing to a stop.
+                    let to = (offset - velocity.x * 0.25).clamp(0.0, max);
+                    ctx.animate_value_with_time(anim_id, offset, 0.0);
+                    ctx.data_mut(|data| data.insert_temp(target_id, to));
+                    ctx.request_repaint();
+                }
+            }
+        }
+    }
 }
 
 /// The skeleton's light band sweeping across `r`, for anything still loading.
@@ -1166,7 +1233,26 @@ pub fn skeleton(ui: &mut Ui, time: f64, rows: usize, card: f32) {
 
 #[cfg(test)]
 mod shelf_scroll_tests {
-    use super::{shelf_page_starts, shelf_page_target};
+    use super::{drag_axis, shelf_page_starts, shelf_page_target};
+    use egui::vec2;
+
+    #[test]
+    fn a_small_movement_does_not_decide_the_axis() {
+        assert_eq!(drag_axis(vec2(6.0, 5.0)), None);
+        assert_eq!(drag_axis(vec2(0.0, 0.0)), None);
+    }
+
+    #[test]
+    fn a_swipe_mostly_sideways_belongs_to_the_shelf() {
+        assert_eq!(drag_axis(vec2(30.0, 8.0)), Some(true));
+        assert_eq!(drag_axis(vec2(-24.0, -10.0)), Some(true));
+    }
+
+    #[test]
+    fn a_swipe_mostly_up_or_down_belongs_to_the_page() {
+        assert_eq!(drag_axis(vec2(6.0, -40.0)), Some(false));
+        assert_eq!(drag_axis(vec2(-9.0, 25.0)), Some(false));
+    }
 
     #[test]
     fn arrows_visit_aligned_pages_in_both_directions() {
