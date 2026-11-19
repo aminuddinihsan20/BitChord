@@ -69,6 +69,9 @@
 
 Download the latest build from [Releases](https://github.com/aminuddinihsan20/BitChord-PC-Official/releases/latest).
 
+> [!NOTE]
+> A copy installed from another repository's releases (BitChord 2.0.1 and earlier) checks that repository for updates, so it never updates to a release from this one. Download the latest release here once by hand; from then on it updates itself.
+
 - **Windows** — download the Windows release asset, extract/install it, and run `bitchord.exe`.
 - **macOS** — download `bitchord-setup-<version>-macos-aarch64.dmg` (Apple silicon) or `…-macos-x86_64.dmg` (Intel), open it and drag BitChord to Applications.
 - **Linux** — download `bitchord-<version>-linux-x86_64.tar.gz`, extract it and run `./install.sh`.
