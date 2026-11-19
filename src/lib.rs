@@ -84,6 +84,10 @@ pub fn run_child_window() -> bool {
 /// Open the app's window and run until it closes. `configure` adjusts the window
 /// options first (Android hands over its activity there).
 pub fn run_with(configure: impl FnOnce(&mut eframe::NativeOptions)) -> eframe::Result {
+    // Everything below keeps its state in the data folder: without one, say so and stop.
+    if let Err(e) = try_data_dir() {
+        return Err(eframe::Error::AppCreation(e.into()));
+    }
     // A party link (`bitchord://party/CODE` or the https invite page): hand it to the running
     // instance if there is one, else join once this one is up. Before `init_logging`,
     // which would truncate the running instance's log file.
@@ -278,13 +282,38 @@ fn init_logging() {
 }
 
 /// Settings, caches and the sign-in: `data` beside the portable build's exe, else the
-/// user's app data. Dev hook: YTM_DATA_DIR runs on a separate profile.
+/// user's app data. YTM_DATA_DIR comes first: a dev profile, or on Android the app's
+/// own storage (which has no home directory to find it from).
+fn try_data_dir() -> anyhow::Result<std::path::PathBuf> {
+    resolve_data_dir(
+        std::env::var_os("YTM_DATA_DIR").map(Into::into),
+        update::portable_dir().map(|dir| dir.join("data")),
+        directories::ProjectDirs::from("", "", "ytm-rs").map(|d| d.data_dir().to_path_buf()),
+    )
+}
+
+/// The first data folder there is, from the most specific source to the default.
+fn resolve_data_dir(env: Option<std::path::PathBuf>, portable: Option<std::path::PathBuf>, default: Option<std::path::PathBuf>) -> anyhow::Result<std::path::PathBuf> {
+    env.or(portable).or(default).ok_or_else(|| anyhow::anyhow!("no data folder: there's no home directory and YTM_DATA_DIR isn't set"))
+}
+
+/// The data folder; `run_with` has checked there is one before anything asks.
 fn data_dir() -> std::path::PathBuf {
-    if let Some(d) = std::env::var_os("YTM_DATA_DIR") {
-        return d.into();
+    try_data_dir().expect("the data folder was found at startup")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn data_dir_without_any_source_is_an_error_not_a_panic() {
+        assert!(resolve_data_dir(None, None, None).is_err());
     }
-    if let Some(dir) = update::portable_dir() {
-        return dir.join("data");
+
+    #[test]
+    fn data_dir_env_wins() {
+        let d = resolve_data_dir(Some("/x".into()), Some("/p".into()), Some("/d".into())).unwrap();
+        assert_eq!(d, std::path::PathBuf::from("/x"));
     }
-    directories::ProjectDirs::from("", "", "ytm-rs").expect("no home directory").data_dir().to_path_buf()
 }

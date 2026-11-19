@@ -10,3 +10,10 @@ server/.wrangler/
 server/node_modules/
 .playwright-cli/
 target-bisect/
+
+# Android: Gradle's state and outputs, and the Rust library cargo-ndk copies in.
+android/.gradle/
+android/build/
+android/app/build/
+android/app/src/main/jniLibs/
+android/local.properties
