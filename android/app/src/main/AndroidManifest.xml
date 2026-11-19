@@ -10,13 +10,14 @@
         android:theme="@style/Theme.BitChord"
         android:allowBackup="false">
 
-        <!-- configChanges: rotation and the like resize the window instead of
-             restarting the activity (and with it the Rust app). -->
+        <!-- configChanges: rotation, font size, language and the like reach the app as
+             changes instead of restarting the activity, which the Rust app (one event
+             loop per process) can't follow. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
-            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|uiMode|density"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|uiMode|density|locale|layoutDirection|fontScale|fontWeightAdjustment|navigation|touchscreen|colorMode|mcc|mnc|grammaticalGender"
             android:windowSoftInputMode="adjustResize">
             <meta-data
                 android:name="android.app.lib_name"
