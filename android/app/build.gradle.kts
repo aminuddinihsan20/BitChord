@@ -11,8 +11,8 @@ android {
         // AAudio, which cpal plays through, needs API 26.
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "2.0.1"
+        versionCode = 2
+        versionName = "2.1.0"
         // The Rust library is built for arm64 only (phones, and the emulator on Apple silicon).
         ndk {
             abiFilters += "arm64-v8a"
