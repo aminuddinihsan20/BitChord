@@ -64,6 +64,25 @@ fn export_arg(uri: &str, path: &Path, name: &str) -> String {
     [uri, &path.display().to_string(), name, export_mime(path)].join("\u{1e}")
 }
 
+/// A size as a phone's storage screen says it: KB, MB, or GB with a decimal.
+pub fn human_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    let b = bytes as f64;
+    if b < KB * KB {
+        format!("{:.0} KB", b / KB)
+    } else if b < KB * KB * KB {
+        format!("{:.0} MB", b / (KB * KB))
+    } else {
+        format!("{:.1} GB", b / (KB * KB * KB))
+    }
+}
+
+/// How much room the downloaded songs take.
+pub fn total_bytes() -> u64 {
+    let st = STATE.read().unwrap();
+    st.index.values().filter_map(|e| std::fs::metadata(&e.path).ok()).map(|m| m.len()).sum()
+}
+
 /// The folder chosen for downloads (address, name), on Android.
 pub fn tree() -> Option<(String, String)> {
     STATE.read().unwrap().tree.clone()
@@ -304,6 +323,14 @@ mod tests {
         assert_eq!(parse_tree(""), None);
         assert_eq!(parse_tree("only-one-line"), None);
         assert_eq!(parse_tree("\nlabel"), None, "an empty address is no folder");
+    }
+
+    #[test]
+    fn sizes_read_like_a_phone_says_them() {
+        assert_eq!(human_size(0), "0 KB");
+        assert_eq!(human_size(1_536), "2 KB");
+        assert_eq!(human_size(148 * 1024 * 1024), "148 MB");
+        assert_eq!(human_size(1_610_612_736), "1.5 GB");
     }
 
     #[test]

@@ -869,6 +869,8 @@ impl App {
             Ok("uploads") => app.go(Page::Library(LibTab::Uploads)),
             Ok("liked") => app.go(Page::Library(LibTab::Songs)),
             Ok("history") => app.go(Page::Library(LibTab::History)),
+            Ok("downloads") => app.go(Page::Downloads),
+            Ok(p) if p.starts_with("local:") => app.go(Page::LocalFolder(p[6..].to_owned())),
             Ok("settings") => app.go(Page::Settings),
             Ok("transfer") => app.go(Page::Transfer),
             Ok("jam") => app.go(Page::Settings),
