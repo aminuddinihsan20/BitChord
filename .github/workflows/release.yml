@@ -1,16 +1,19 @@
 name: Release
 
-# Builds an installer and a portable download for every platform from the tagged source:
-# Windows (setup exe and portable zip, x64 and ARM64), Linux (install.sh tarball and
-# portable tarball), macOS (disk image and portable zip, Apple silicon and Intel) and Android (an APK for 64-bit ARM phones), then attaches them all to the GitHub release for that tag.
-# Releases are written as drafts (with notes) and published here only once every
-# file is attached, so the app's updater, which reads the latest published release,
-# never sees one without them. If no release exists yet, one is created as a draft
-# to be given notes and published by hand.
+# Pushing a new version builds it and publishes it, with no button to press.
+#
+# On every push to rust-2.0 the `plan` job reads the version in Cargo.toml. If that
+# version has no release yet (tag v<version>), it is released: the platforms listed in
+# .github/release-notes/v<version>.platforms (words: windows linux macos android; all of
+# them when the file is missing) are built, their files are attached, and the release is
+# published at once with .github/release-notes/v<version>.md as its notes. A push that
+# doesn't change the version builds nothing, and a platform that isn't listed gets no job.
+# Pushing a v* tag by hand, or running this workflow by hand, does the same for that tag
+# (by hand, each platform is a switch).
 on:
   push:
+    branches: [rust-2.0]
     tags: ["v*"]
-  # Run by hand, each platform can be left out (a release that only changes one of them).
   workflow_dispatch:
     inputs:
       windows:
@@ -34,8 +37,53 @@ permissions:
   contents: write
 
 jobs:
+  # Decides whether this push is a release, and which platforms it builds.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.p.outputs.release }}
+      tag: ${{ steps.p.outputs.tag }}
+      windows: ${{ steps.p.outputs.windows }}
+      linux: ${{ steps.p.outputs.linux }}
+      macos: ${{ steps.p.outputs.macos }}
+      android: ${{ steps.p.outputs.android }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: p
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_WINDOWS: ${{ inputs.windows }}
+          INPUT_LINUX: ${{ inputs.linux }}
+          INPUT_MACOS: ${{ inputs.macos }}
+          INPUT_ANDROID: ${{ inputs.android }}
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if [ "$REF_TYPE" = tag ]; then tag=$REF_NAME; else tag="v$version"; fi
+          release=true
+          # A push to the branch that leaves the version alone is not a release.
+          if [ "$EVENT" = push ] && [ "$REF_TYPE" = branch ] && git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            release=false
+          fi
+          list=".github/release-notes/$tag.platforms"
+          for p in windows linux macos android; do
+            if [ "$release" = false ]; then on=false
+            elif [ "$EVENT" = workflow_dispatch ]; then
+              [ "$(printenv "INPUT_$(echo "$p" | tr a-z A-Z)")" = true ] && on=true || on=false
+            elif [ -f "$list" ]; then
+              grep -qw "$p" "$list" && on=true || on=false
+            else on=true; fi
+            echo "$p=$on" >> "$GITHUB_OUTPUT"
+          done
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "release=$release tag=$tag"
+
   windows:
-    if: github.event_name != 'workflow_dispatch' || inputs.windows
+    needs: plan
+    if: needs.plan.outputs.windows == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -117,7 +165,8 @@ jobs:
           if-no-files-found: error
 
   linux:
-    if: github.event_name != 'workflow_dispatch' || inputs.linux
+    needs: plan
+    if: needs.plan.outputs.linux == 'true'
     # The oldest supported Ubuntu, so the binary runs on older glibc too.
     runs-on: ubuntu-22.04
     steps:
@@ -163,7 +212,8 @@ jobs:
           if-no-files-found: error
 
   macos:
-    if: github.event_name != 'workflow_dispatch' || inputs.macos
+    needs: plan
+    if: needs.plan.outputs.macos == 'true'
     runs-on: macos-latest
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
@@ -224,7 +274,8 @@ jobs:
           if-no-files-found: error
 
   android:
-    if: github.event_name != 'workflow_dispatch' || inputs.android
+    needs: plan
+    if: needs.plan.outputs.android == 'true'
     runs-on: ubuntu-latest
     env:
       ANDROID_NDK_VERSION: 30.0.16248370
@@ -303,25 +354,35 @@ jobs:
           if-no-files-found: error
 
   attach:
+    needs: [plan, windows, linux, macos, android]
     # Whatever was built (a platform left out is skipped, not a failure); nothing if one failed.
-    if: github.ref_type == 'tag' && !cancelled() && !contains(needs.*.result, 'failure')
-    needs: [windows, linux, macos, android]
+    if: needs.plan.outputs.release == 'true' && !cancelled() && !contains(needs.*.result, 'failure')
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
+
       - uses: actions/download-artifact@v5
         with:
           path: files
           merge-multiple: true
 
-      - name: Attach to release
+      # The release is published here, once every file is on it, with its notes: the app's
+      # updater reads the latest published release, so it never sees one half built.
+      - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.plan.outputs.tag }}
         run: |
           ls -l files
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" files/* --clobber
-            gh release edit "$GITHUB_REF_NAME" --draft=false --latest
+          [ -n "$(ls -A files 2>/dev/null)" ] || { echo "nothing was built"; exit 1; }
+          notes=".github/release-notes/$TAG.md"
+          if [ -f "$notes" ]; then notes_args="--notes-file $notes"; else notes_args="--generate-notes"; fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" files/* --clobber
+            gh release edit "$TAG" --draft=false --latest --title "bitchord ${TAG#v}" $notes_args
           else
-            gh release create "$GITHUB_REF_NAME" files/* --draft --title "bitchord ${GITHUB_REF_NAME#v}" --notes ""
+            # --target makes the tag at this commit when it doesn't exist yet.
+            gh release create "$TAG" files/* --target "$GITHUB_SHA" --latest --title "bitchord ${TAG#v}" $notes_args
           fi
+          gh release view "$TAG" --json url,isDraft --jq '"\(.url) draft=\(.isDraft)"'
