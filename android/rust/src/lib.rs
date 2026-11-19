@@ -8,7 +8,13 @@ use winit::platform::android::activity::AndroidApp;
 
 #[unsafe(no_mangle)]
 fn android_main(app: AndroidApp) {
-    android_logger::init_once(android_logger::Config::default().with_max_level(log::LevelFilter::Info).with_tag("bitchord"));
+    // The desktop's default filter: our own crate at info, everything else warnings.
+    android_logger::init_once(
+        android_logger::Config::default()
+            .with_max_level(log::LevelFilter::Info)
+            .with_tag("bitchord")
+            .with_filter(android_logger::FilterBuilder::new().parse("warn,bitchord=info,bitchord_android=info").build()),
+    );
     // Android drops stderr, where Rust reports a panic; and the app keeps running after
     // one on a worker thread (panic = "unwind"), so log every one.
     let report = std::panic::take_hook();

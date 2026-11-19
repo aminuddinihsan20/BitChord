@@ -1,6 +1,7 @@
 # NDK r30's headers refuse the unversioned triple bindgen hands clang when it generates
 # rquickjs's bindings for Android, so give it the app's minSdk API level. bindgen reads
 # this hyphenated name before the underscored one cargo-ndk sets (its include paths are
-# still found through cargo-ndk's CLANG_PATH).
+# still found through cargo-ndk's CLANG_PATH). 26 is minSdk: keep it equal to
+# android/app/build.gradle.kts and `-P` in android/build.sh.
 [env]
 "BINDGEN_EXTRA_CLANG_ARGS_aarch64-linux-android" = "--target=aarch64-linux-android26"
