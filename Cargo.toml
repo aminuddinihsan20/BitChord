@@ -6,6 +6,10 @@ license = "GPL-3.0-only"
 repository = "https://github.com/aminuddinihsan20/BitChord-PC-Official"
 description = "Native BitChord client"
 
+# The Android activity's crate (a cdylib around this one) shares the lock file and target dir.
+[workspace]
+members = ["android/rust"]
+
 [dependencies]
 anyhow = "1.0.104"
 base64 = "0.22.1"
@@ -25,7 +29,8 @@ localzone = "0.3.1"
 log = "0.4.34"
 memmap2 = "0.9.11"
 raw-window-handle = "0.6"
-reqwest = { version = "0.12", default-features = false, features = ["default-tls", "gzip", "json", "socks"] }
+# TLS per platform below: native-tls on the desktops, rustls on Android (no OpenSSL there).
+reqwest = { version = "0.12", default-features = false, features = ["gzip", "json", "socks"] }
 rodio = { version = "0.22.2", default-features = false, features = ["playback", "symphonia-aac", "symphonia-isomp4", "symphonia-flac", "symphonia-alac", "symphonia-wav", "symphonia-mp3", "symphonia-vorbis"] }
 rquickjs = "0.14.0"
 roxmltree = "0.21.1"
@@ -36,21 +41,33 @@ sha2 = "0.10.9"
 hmac = "0.12.1"
 serde_json = "1.0.151"
 souvlaki = "0.8.3"
-tao = "0.37.1"
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "sync", "time"] }
-wry = "0.57.0"
-rfd = "0.17.2"
-tray-icon = "0.26.1"
 url = "2.5.8"
 # The opt-in renderer: Vulkan, Metal on macOS (renderer.rs).
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "vulkan", "metal"] }
-tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "native-tls"] }
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect"] }
 mp4ameta = "0.13.0"
 md-5 = "0.10"
 unicode-normalization = "0.1.26"
 symphonia = { version = "0.5.5", default-features = false, features = ["mkv", "isomp4", "flac"] }
 rusty-opus = "1.0.2"
 unicode-bidi = "0.3"
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["default-tls"] }
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["native-tls"] }
+# Sign-in and Turnstile windows (login.rs, turnstile.rs), the tray icon and file
+# dialogs: the desktops have them; Android gets stand-ins (src/*_android.rs).
+tao = "0.37.1"
+wry = "0.57.0"
+rfd = "0.17.2"
+tray-icon = "0.26.1"
+
+[target.'cfg(target_os = "android")'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["rustls-tls-webpki-roots"] }
+# rquickjs ships no prebuilt bindings for Android: generate them (needs libclang).
+rquickjs = { version = "0.14.0", features = ["bindgen"] }
 
 [target.'cfg(windows)'.dependencies]
 # Windows Credential Manager, for the Google and Spotify sign-ins.

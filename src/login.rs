@@ -7,13 +7,22 @@
 //! The window runs in a child process (`ytm-rs --login <dir>`): tao and winit crash
 //! when both pump windows in one process (STATUS_FATAL_USER_CALLBACK_EXCEPTION), and a
 //! separate process also returns all webview memory to the OS once sign-in ends.
+//!
+//! Android can't start such a child process, so there `spawn` reports that signing in
+//! isn't available yet (an Android WebView sign-in is planned separately).
+#![cfg_attr(target_os = "android", allow(dead_code))]
 
 use std::path::PathBuf;
 
+#[cfg(not(target_os = "android"))]
 use tao::event::{Event, WindowEvent};
+#[cfg(not(target_os = "android"))]
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
+#[cfg(not(target_os = "android"))]
 use tao::platform::run_return::EventLoopExtRunReturn;
+#[cfg(not(target_os = "android"))]
 use tao::window::WindowBuilder;
+#[cfg(not(target_os = "android"))]
 use wry::{PageLoadEvent, WebContext, WebViewBuilder};
 
 /// Which sign-in.
@@ -79,7 +88,14 @@ const SAFARI_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWe
 pub const FLAG: &str = "--login";
 pub const SPOTIFY_FLAG: &str = "--login-spotify";
 
+/// Android: no sign-in window yet; `done` is told so.
+#[cfg(target_os = "android")]
+pub fn spawn(_site: Site, _profile_dir: PathBuf, done: impl FnOnce(Outcome) + Send + 'static) {
+    done(Outcome::Failed("signing in isn't available on Android yet".to_owned()));
+}
+
 /// Show the sign-in window in a child process; `done` is called exactly once.
+#[cfg(not(target_os = "android"))]
 pub fn spawn(site: Site, profile_dir: PathBuf, done: impl FnOnce(Outcome) + Send + 'static) {
     std::thread::Builder::new()
         .name("login".into())
@@ -114,6 +130,7 @@ pub fn spawn(site: Site, profile_dir: PathBuf, done: impl FnOnce(Outcome) + Send
 }
 
 /// Entry point of the child process: run the window and report on stdout.
+#[cfg(not(target_os = "android"))]
 pub fn child_main(site: Site, profile_dir: PathBuf) {
     match run(site, profile_dir) {
         Ok(Outcome::Cookie(c)) => println!("cookie {c}"),
@@ -126,10 +143,12 @@ pub fn child_main(site: Site, profile_dir: PathBuf) {
 /// Put the webview in its window. On Linux it goes in the GTK box tao made for it:
 /// wry's plain `build` only works with an X11 window that already exists, and these
 /// start hidden (and Wayland has no such window at all).
+#[cfg(not(target_os = "android"))]
 pub trait BuildIn<'a> {
     fn build_in(self, window: &'a tao::window::Window) -> wry::Result<wry::WebView>;
 }
 
+#[cfg(not(target_os = "android"))]
 impl<'a> BuildIn<'a> for WebViewBuilder<'a> {
     fn build_in(self, window: &'a tao::window::Window) -> wry::Result<wry::WebView> {
         #[cfg(target_os = "linux")]
@@ -144,7 +163,7 @@ impl<'a> BuildIn<'a> for WebViewBuilder<'a> {
 }
 
 /// The cookies the browser would send to `url`.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "android")))]
 fn cookies_for(webview: &wry::WebView, url: &str) -> wry::Result<Vec<wry::cookie::Cookie<'static>>> {
     webview.cookies_for_url(url)
 }
@@ -201,6 +220,7 @@ fn store_id(profile_dir: &std::path::Path) -> [u8; 16] {
     id
 }
 
+#[cfg(not(target_os = "android"))]
 fn run(site: Site, profile_dir: PathBuf) -> anyhow::Result<Outcome> {
     let mut event_loop = EventLoopBuilder::<()>::with_user_event().build();
 

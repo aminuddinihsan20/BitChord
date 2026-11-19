@@ -65,6 +65,7 @@ pub fn set_folder(folder: PathBuf) {
 }
 
 /// Ask for a new folder (the system picker, on its own thread).
+#[cfg(not(target_os = "android"))]
 pub fn pick_folder(ctx: &egui::Context) {
     let ctx = ctx.clone();
     std::thread::spawn(move || {
@@ -75,6 +76,10 @@ pub fn pick_folder(ctx: &egui::Context) {
     });
 }
 
+/// Android: no folder picker yet (Settings hides "Change", see `crate::platform`).
+#[cfg(target_os = "android")]
+pub fn pick_folder(_ctx: &egui::Context) {}
+
 pub fn open_folder() {
     let dir = folder();
     let _ = std::fs::create_dir_all(&dir);
@@ -82,7 +87,7 @@ pub fn open_folder() {
     let _ = std::process::Command::new("explorer").arg(dir).spawn();
     #[cfg(target_os = "macos")]
     let _ = std::process::Command::new("open").arg(dir).spawn();
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))]
     let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
 }
 
@@ -98,7 +103,7 @@ pub fn show_file(path: &Path) {
     let _ = std::process::Command::new("open").arg("-R").arg(path).spawn();
     // Linux: the file manager's ShowItems selects it (Nautilus, Dolphin, Nemo, …);
     // without one, just open the folder.
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))]
     {
         let uri = url::Url::from_file_path(path).map(|u| u.to_string()).unwrap_or_default();
         let shown = std::process::Command::new("dbus-send")
@@ -111,6 +116,9 @@ pub fn show_file(path: &Path) {
             let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
         }
     }
+    // Android: no file manager to hand it to yet.
+    #[cfg(target_os = "android")]
+    let _ = path;
 }
 
 /// The song's file, if it's downloaded and still there.

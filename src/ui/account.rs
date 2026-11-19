@@ -8,6 +8,7 @@ use super::App;
 
 impl App {
     /// Open the system file picker for songs to upload; it runs on its own thread.
+    #[cfg(not(target_os = "android"))]
     pub(super) fn pick_uploads(&self, ctx: &egui::Context) {
         let (slot, ctx) = (self.picked_uploads.clone(), ctx.clone());
         std::thread::spawn(move || {
@@ -18,6 +19,10 @@ impl App {
             }
         });
     }
+
+    /// Android: no file picker yet.
+    #[cfg(target_os = "android")]
+    pub(super) fn pick_uploads(&self, _ctx: &egui::Context) {}
 
     pub(super) fn upload_files(&mut self, files: Vec<std::path::PathBuf>) {
         let (ok, skipped): (Vec<_>, Vec<_>) = files.into_iter().partition(|f| {

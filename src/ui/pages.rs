@@ -1563,10 +1563,12 @@ fn settings_downloads(ui: &mut Ui) {
     settings_card(ui, |ui| {
         let folder = crate::downloads::folder().display().to_string();
         setting_row(ui, "Download folder", Some(&folder), |ui| {
-            if pill(ui, "Change", None, false).clicked() {
-                crate::downloads::pick_folder(ui.ctx());
+            if crate::platform::HAS_FILE_DIALOG {
+                if pill(ui, "Change", None, false).clicked() {
+                    crate::downloads::pick_folder(ui.ctx());
+                }
+                ui.add_space(6.0);
             }
-            ui.add_space(6.0);
             if pill(ui, "Open", Some(icon::FOLDER_OPEN), false).clicked() {
                 crate::downloads::open_folder();
             }
@@ -1769,10 +1771,12 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
 fn settings_window(app: &mut App, ui: &mut Ui) {
     section_label(ui, "Window", None);
     settings_card(ui, |ui| {
-        setting_row(ui, "Close to tray", Some("Clicking × hides the window and keeps the music playing. Click the tray icon to bring it back, or right-click it to quit."), |ui| {
-            toggle(ui, &mut app.close_to_tray, "Close to tray");
-        });
-        divider(ui);
+        if crate::platform::HAS_TRAY {
+            setting_row(ui, "Close to tray", Some("Clicking × hides the window and keeps the music playing. Click the tray icon to bring it back, or right-click it to quit."), |ui| {
+                toggle(ui, &mut app.close_to_tray, "Close to tray");
+            });
+            divider(ui);
+        }
         setting_row(ui, "Collapse sidebar", Some("Show only icons in the sidebar, for narrow windows. The menu button at its top does the same."), |ui| {
             toggle(ui, &mut app.sidebar_collapsed, "Collapse sidebar");
         });
