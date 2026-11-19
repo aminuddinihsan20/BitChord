@@ -214,11 +214,12 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned to commits: this job handles the signing key.
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           targets: aarch64-linux-android
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       # bindgen (rquickjs's Android bindings) needs libclang.
       - name: Install libclang
@@ -262,6 +263,11 @@ jobs:
             echo "::warning::no signing key: the APK is signed with the debug key"
           fi
           sh android/build.sh release
+
+      # The key is on the runner's disk only while the APK is built.
+      - name: Remove the signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.keystore"
 
       - name: Name the APK
         run: |
