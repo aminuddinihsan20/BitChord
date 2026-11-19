@@ -109,3 +109,27 @@ extern "system" fn Java_io_github_aminuddinihsan20_bitchord_LoginActivity_native
     let text: String = env.get_string(&text).map(Into::into).unwrap_or_default();
     bitchord::platform::finish_login(if ok != 0 { Ok(text) } else { Err(text) });
 }
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_io_github_aminuddinihsan20_bitchord_MainActivity_nativeSetBackground(_env: Jni, _class: Jni, away: u8) {
+    bitchord::platform::set_background(away != 0);
+}
+
+fn now_playing_string(env: &jni::JNIEnv) -> jni::sys::jstring {
+    env.new_string(bitchord::platform::now_playing_line()).map_or(std::ptr::null_mut(), |s| s.into_raw())
+}
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_io_github_aminuddinihsan20_bitchord_MainActivity_nativeNowPlaying(env: jni::JNIEnv, _class: Jni) -> jni::sys::jstring {
+    now_playing_string(&env)
+}
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_io_github_aminuddinihsan20_bitchord_PlaybackService_nativeNowPlaying(env: jni::JNIEnv, _class: Jni) -> jni::sys::jstring {
+    now_playing_string(&env)
+}
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_io_github_aminuddinihsan20_bitchord_PlaybackService_nativeMediaCommand(_env: Jni, _class: Jni, code: i32, arg: i64) {
+    bitchord::platform::push_media_command(code, arg);
+}

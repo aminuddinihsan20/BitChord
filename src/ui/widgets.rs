@@ -1046,6 +1046,12 @@ struct ShelfDrag {
 
 /// Horizontal scroller that animates between aligned pages of cards or song columns.
 pub fn h_scroll<R>(ui: &mut Ui, id: &str, nudge: i32, count: usize, item_width: f32, gap: f32, add: impl FnOnce(&mut Ui) -> R) -> (R, bool) {
+    h_scroll_on(ui, crate::platform::phone(), id, nudge, count, item_width, gap, add)
+}
+
+/// [`h_scroll`], told whether a finger swipes it (a phone) or a wheel and the arrows do.
+#[allow(clippy::too_many_arguments)]
+fn h_scroll_on<R>(ui: &mut Ui, phone: bool, id: &str, nudge: i32, count: usize, item_width: f32, gap: f32, add: impl FnOnce(&mut Ui) -> R) -> (R, bool) {
     let sid = egui::Id::unique(("hscroll", id));
     let anim_id = sid.with("anim");
     // ScrollArea hashes its id_salt once more. Read that same ID, or left clicks
@@ -1070,7 +1076,6 @@ pub fn h_scroll<R>(ui: &mut Ui, id: &str, nudge: i32, count: usize, item_width: 
         ui.ctx().data_mut(|d| d.insert_temp(target_id, t));
     }
     let mut area = egui::ScrollArea::horizontal().id_salt(sid).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
-    let phone = crate::platform::phone();
     let drag_id = sid.with("shelf-drag");
     let held_id = sid.with("shelf-held");
     if phone {
@@ -1098,9 +1103,33 @@ pub fn h_scroll<R>(ui: &mut Ui, id: &str, nudge: i32, count: usize, item_width: 
     ui.ctx().data_mut(|d| d.insert_temp(viewport_id, out.inner_rect.width()));
     if phone {
         let pages = Pages { starts: &starts, step, max: (out.content_size.x - out.inner_rect.width()).max(0.0) };
-        follow_horizontal_swipe(ui.ctx(), out.inner_rect, out.state.clamped_offset().x, &pages, drag_id, held_id, target_id, anim_id);
+        let touch = Touch { rect: shelf_rect(out.inner_rect, out.content_size, ui.clip_rect()), layer: ui.layer_id() };
+        follow_horizontal_swipe(ui.ctx(), touch, out.state.clamped_offset().x, &pages, drag_id, held_id, target_id, anim_id);
     }
     (out.inner, reached_end)
+}
+
+/// Where a shelf is on the screen. `inner` is the room the scroll area was offered, not
+/// what it took: it reaches down over the shelves below (a swipe on one of those moved
+/// this one too) and is empty past the first screenful of the page (those never moved).
+/// The shelf itself is as tall as its content, and only what `clip` shows of it counts.
+fn shelf_rect(inner: Rect, content: Vec2, clip: Rect) -> Rect {
+    Rect::from_min_size(inner.min, vec2(inner.width(), content.y)).intersect(clip)
+}
+
+/// What a finger must have come down on for a swipe to be a shelf's.
+#[derive(Clone, Copy)]
+struct Touch {
+    rect: Rect,
+    /// The page's layer: a touch on something drawn over it (Now Playing, the mini
+    /// player, a menu) is not the shelf's.
+    layer: egui::LayerId,
+}
+
+impl Touch {
+    fn began_at(&self, ctx: &egui::Context, origin: Pos2) -> bool {
+        self.rect.contains(origin) && ctx.layer_id_at(origin).is_none_or(|top| top == self.layer)
+    }
 }
 
 /// The shelf's aligned pages, for a swipe to land on.
@@ -1118,10 +1147,10 @@ pub fn shelf_swipe_id() -> egui::Id {
 /// Move a shelf with a finger that started on it and went horizontally, then turn it one
 /// page (as the arrows do) when let go. A vertical swipe is left to the page.
 #[allow(clippy::too_many_arguments)]
-fn follow_horizontal_swipe(ctx: &egui::Context, rect: Rect, offset: f32, pages: &Pages, drag_id: egui::Id, held_id: egui::Id, target_id: egui::Id, anim_id: egui::Id) {
+fn follow_horizontal_swipe(ctx: &egui::Context, touch: Touch, offset: f32, pages: &Pages, drag_id: egui::Id, held_id: egui::Id, target_id: egui::Id, anim_id: egui::Id) {
     let (origin, latest, down, velocity) = ctx.input(|i| (i.pointer.press_origin(), i.pointer.latest_pos(), i.pointer.primary_down(), i.pointer.velocity()));
     let drag: Option<ShelfDrag> = ctx.data(|d| d.get_temp(drag_id));
-    match (down, origin.filter(|o| rect.contains(*o)), latest) {
+    match (down, origin.filter(|o| touch.began_at(ctx, *o)), latest) {
         (true, Some(origin), Some(now)) => {
             let mut d = drag.unwrap_or(ShelfDrag { start_offset: offset, axis: None, dx: 0.0 });
             let delta = now - origin;
@@ -1277,8 +1306,8 @@ pub fn skeleton(ui: &mut Ui, time: f64, rows: usize, card: f32) {
 
 #[cfg(test)]
 mod shelf_scroll_tests {
-    use super::{drag_axis, nearest_page, shelf_page_starts, shelf_page_target, swipe_direction};
-    use egui::vec2;
+    use super::{drag_axis, h_scroll_on, nearest_page, shelf_page_starts, shelf_page_target, swipe_direction};
+    use egui::{Pos2, Rect, Sense, pos2, vec2};
 
     #[test]
     fn a_short_slow_swipe_stays_on_the_page() {
@@ -1318,6 +1347,97 @@ mod shelf_scroll_tests {
     fn a_swipe_mostly_up_or_down_belongs_to_the_page() {
         assert_eq!(drag_axis(vec2(6.0, -40.0)), Some(false));
         assert_eq!(drag_axis(vec2(-9.0, 25.0)), Some(false));
+    }
+
+    /// A phone page of six shelves in a headless egui, 400 x 600: each shelf is 160 tall
+    /// under a 40 pt gap, so only the first three fit on the screen before scrolling.
+    struct Shelves {
+        ctx: egui::Context,
+        /// How far down the page is scrolled.
+        page_y: f32,
+        /// Something drawn over the page (as Now Playing or the mini player is).
+        cover: Option<Rect>,
+        time: f64,
+    }
+
+    impl Shelves {
+        fn new(page_y: f32) -> Shelves {
+            let mut s = Shelves { ctx: egui::Context::default(), page_y, cover: None, time: 0.0 };
+            // Two frames to settle the layout before a finger comes down.
+            s.frame(vec![]);
+            s.frame(vec![]);
+            s
+        }
+
+        /// One frame; where each shelf's first tile was drawn (its left edge moves left
+        /// as the shelf scrolls).
+        fn frame(&mut self, events: Vec<egui::Event>) -> Vec<f32> {
+            self.time += 1.0 / 60.0;
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(400.0, 600.0))), time: Some(self.time), events, ..Default::default() };
+            let mut lefts = Vec::new();
+            let (page_y, cover) = (self.page_y, self.cover);
+            let out = self.ctx.run_ui(input, |ui| {
+                egui::ScrollArea::vertical().id_salt("page").auto_shrink(false).vertical_scroll_offset(page_y).show(ui, |ui| {
+                    for i in 0..6 {
+                        ui.add_space(40.0);
+                        h_scroll_on(ui, true, &format!("test-shelf-{i}"), 0, 12, 100.0, 20.0, |ui| {
+                            ui.spacing_mut().item_spacing.x = 20.0;
+                            lefts.push(ui.cursor().min.x);
+                            for _ in 0..12 {
+                                ui.allocate_exact_size(vec2(100.0, 160.0), Sense::hover());
+                            }
+                        });
+                    }
+                });
+                if let Some(rect) = cover {
+                    egui::Area::new(egui::Id::unique("test-cover")).order(egui::Order::Middle).fixed_pos(rect.min).show(ui.ctx(), |ui| {
+                        ui.allocate_rect(rect, Sense::click_and_drag());
+                    });
+                }
+            });
+            out.drop_without_applying_deltas();
+            lefts
+        }
+
+        /// A finger goes down at `from` and slides to `to` without lifting; how far each
+        /// shelf has scrolled by then.
+        fn swipe(&mut self, from: Pos2, to: Pos2) -> Vec<f32> {
+            let before = self.frame(vec![]);
+            self.frame(vec![egui::Event::PointerMoved(from), egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() }]);
+            self.frame(vec![egui::Event::PointerMoved(to)]);
+            // The shelf takes the finger's place on the frame after it moved.
+            let after = self.frame(vec![]);
+            before.iter().zip(&after).map(|(b, a)| (b - a).round()).collect()
+        }
+    }
+
+    #[test]
+    fn a_sideways_swipe_moves_only_the_shelf_under_the_finger() {
+        // The second shelf is on screen from y 240 to 400; the first one is above it.
+        let moved = Shelves::new(0.0).swipe(pos2(300.0, 300.0), pos2(220.0, 304.0));
+        assert_eq!(moved, [0.0, 80.0, 0.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_shelf_further_down_the_page_is_swiped_too() {
+        // Scrolled 600 down, the fifth shelf (840 to 1000 on the page) is at y 240 to 400.
+        let moved = Shelves::new(600.0).swipe(pos2(300.0, 300.0), pos2(220.0, 304.0));
+        assert_eq!(moved, [0.0, 0.0, 0.0, 0.0, 80.0, 0.0]);
+    }
+
+    #[test]
+    fn a_swipe_on_what_covers_the_page_leaves_the_shelf_under_it_alone() {
+        let mut page = Shelves::new(0.0);
+        page.cover = Some(Rect::from_min_size(Pos2::ZERO, vec2(400.0, 600.0)));
+        let moved = page.swipe(pos2(300.0, 300.0), pos2(220.0, 304.0));
+        assert_eq!(moved, [0.0; 6]);
+    }
+
+    #[test]
+    fn a_swipe_between_two_shelves_moves_neither() {
+        // y 220 is in the gap above the second shelf.
+        let moved = Shelves::new(0.0).swipe(pos2(300.0, 220.0), pos2(220.0, 224.0));
+        assert_eq!(moved, [0.0; 6]);
     }
 
     #[test]

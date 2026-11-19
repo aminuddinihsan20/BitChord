@@ -24,6 +24,10 @@ mod playback;
 mod queue;
 mod responses;
 mod shell;
+#[cfg(target_os = "android")]
+mod shared;
+#[cfg(target_os = "android")]
+pub use shared::Shared;
 mod titlebar;
 pub use titlebar::{custom as custom_titlebar, set_hwnd as set_titlebar_hwnd};
 mod transfer;
@@ -1194,6 +1198,19 @@ impl App {
 }
 
 
+
+impl App {
+    /// The player's bookkeeping without a window: what `logic` does for the music, run
+    /// while the Android activity is away and no frame is being drawn (see `shared`).
+    /// `now` is seconds since the app started.
+    #[cfg(target_os = "android")]
+    pub(crate) fn background_tick(&mut self, now: f64) {
+        self.pump(now);
+        for a in std::mem::take(&mut self.actions) {
+            self.apply(a);
+        }
+    }
+}
 
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {

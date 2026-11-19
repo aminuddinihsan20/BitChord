@@ -185,6 +185,119 @@ pub fn finish_login(answer: Result<String, String>) {
     }
 }
 
+static BACKGROUND: AtomicBool = AtomicBool::new(false);
+
+/// Android: the activity left the screen (stopped) or came back. While it is away the
+/// window is gone and no frame is drawn, so the player's bookkeeping runs without one.
+pub fn set_background(away: bool) {
+    BACKGROUND.store(away, Ordering::SeqCst);
+}
+
+pub fn in_background() -> bool {
+    BACKGROUND.load(Ordering::SeqCst)
+}
+
+/// What the media notification shows.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NowPlaying {
+    pub title: String,
+    pub artist: String,
+    /// The artwork's address; the notification fetches it.
+    pub cover: String,
+    pub playing: bool,
+    pub duration_ms: i64,
+    pub position_ms: i64,
+}
+
+const FIELD: char = '\u{1f}';
+
+impl NowPlaying {
+    /// One line for the activity to read: fields joined by U+001F; empty when nothing is
+    /// loaded. A title can't break it: the separator and newlines in text become spaces.
+    pub fn to_line(&self) -> String {
+        if self.title.is_empty() {
+            return String::new();
+        }
+        let clean = |t: &str| t.replace([FIELD, '\n', '\r'], " ");
+        [clean(&self.title), clean(&self.artist), clean(&self.cover), u8::from(self.playing).to_string(), self.duration_ms.to_string(), self.position_ms.to_string()].join(&FIELD.to_string())
+    }
+
+    pub fn from_line(line: &str) -> Option<NowPlaying> {
+        let mut f = line.split(FIELD);
+        let (title, artist, cover, playing, duration, position) = (f.next()?, f.next()?, f.next()?, f.next()?, f.next()?, f.next()?);
+        Some(NowPlaying { title: title.to_owned(), artist: artist.to_owned(), cover: cover.to_owned(), playing: playing == "1", duration_ms: duration.parse().ok()?, position_ms: position.parse().ok()? })
+    }
+}
+
+static NOW_PLAYING: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// Publish what plays, for the media notification (cheap when unchanged).
+pub fn set_now_playing(now: &NowPlaying) {
+    let line = now.to_line();
+    let mut slot = NOW_PLAYING.lock().unwrap_or_else(|e| e.into_inner());
+    if *slot != line {
+        *slot = line;
+    }
+}
+
+/// The line the activity polls (see [`NowPlaying::to_line`]).
+pub fn now_playing_line() -> String {
+    NOW_PLAYING.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// A button on the notification, the lock screen or a headset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MediaCommand {
+    Play,
+    Pause,
+    Toggle,
+    Next,
+    Previous,
+    /// To this position, in milliseconds.
+    Seek(i64),
+}
+
+impl MediaCommand {
+    /// The code and argument the activity (Java) sends.
+    pub fn to_code(self) -> (i32, i64) {
+        match self {
+            MediaCommand::Play => (1, 0),
+            MediaCommand::Pause => (2, 0),
+            MediaCommand::Toggle => (3, 0),
+            MediaCommand::Next => (4, 0),
+            MediaCommand::Previous => (5, 0),
+            MediaCommand::Seek(ms) => (6, ms),
+        }
+    }
+
+    fn from_code(code: i32, arg: i64) -> Option<MediaCommand> {
+        Some(match code {
+            1 => MediaCommand::Play,
+            2 => MediaCommand::Pause,
+            3 => MediaCommand::Toggle,
+            4 => MediaCommand::Next,
+            5 => MediaCommand::Previous,
+            6 => MediaCommand::Seek(arg),
+            _ => return None,
+        })
+    }
+}
+
+static MEDIA_COMMANDS: std::sync::Mutex<Vec<MediaCommand>> = std::sync::Mutex::new(Vec::new());
+
+/// The activity: a notification button was pressed.
+pub fn push_media_command(code: i32, arg: i64) {
+    if let Some(c) = MediaCommand::from_code(code, arg) {
+        MEDIA_COMMANDS.lock().unwrap_or_else(|e| e.into_inner()).push(c);
+        wake();
+    }
+}
+
+/// The buttons pressed since the last call, in order.
+pub fn take_media_commands() -> Vec<MediaCommand> {
+    std::mem::take(&mut *MEDIA_COMMANDS.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,6 +387,50 @@ mod tests {
             assert_eq!(LoginSite::from_code(site.code()), Some(site));
         }
         assert_eq!(LoginSite::from_code(0), None);
+    }
+
+    #[test]
+    fn what_is_playing_is_told_to_the_notification_as_one_line() {
+        let now = NowPlaying { title: "Tabun".into(), artist: "YOASOBI".into(), cover: "https://x/y.jpg".into(), playing: true, duration_ms: 261_000, position_ms: 15_500 };
+        let line = now.to_line();
+        assert_eq!(NowPlaying::from_line(&line), Some(now));
+    }
+
+    #[test]
+    fn nothing_playing_is_an_empty_line() {
+        assert_eq!(NowPlaying::default().to_line(), "");
+        assert_eq!(NowPlaying::from_line(""), None);
+    }
+
+    #[test]
+    fn a_title_with_the_separator_in_it_is_still_one_line() {
+        let now = NowPlaying { title: "a\u{1f}b\nc".into(), ..NowPlaying::default() };
+        let back = NowPlaying::from_line(&now.to_line()).unwrap();
+        assert!(!back.title.contains('\u{1f}') && !back.title.contains('\n'), "{:?}", back.title);
+    }
+
+    #[test]
+    fn media_commands_cross_the_activity_as_numbers_and_back_in_order() {
+        assert!(take_media_commands().is_empty());
+        for c in [MediaCommand::Toggle, MediaCommand::Next, MediaCommand::Seek(42_000), MediaCommand::Previous, MediaCommand::Play, MediaCommand::Pause] {
+            let (code, arg) = c.to_code();
+            push_media_command(code, arg);
+        }
+        push_media_command(99, 0);
+        assert_eq!(
+            take_media_commands(),
+            [MediaCommand::Toggle, MediaCommand::Next, MediaCommand::Seek(42_000), MediaCommand::Previous, MediaCommand::Play, MediaCommand::Pause],
+            "an unknown code is dropped"
+        );
+        assert!(take_media_commands().is_empty());
+    }
+
+    #[test]
+    fn the_app_knows_when_it_is_in_the_background() {
+        set_background(true);
+        assert!(in_background());
+        set_background(false);
+        assert!(!in_background());
     }
 
     #[test]

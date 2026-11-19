@@ -15,6 +15,7 @@ use super::{Action, App, Dialog, HomeState, LibTab, MixFrom, Page, PlayingAs, Re
 
 impl App {
     pub(super) fn pump(&mut self, now: f64) {
+        self.media_notification();
         let cover = self.media_cover.lock().unwrap().take();
         // The listed track's art, with what plays's title, artists and length.
         if let Some((id, file)) = cover
@@ -714,6 +715,45 @@ fn account_block(msg: &str, logged_in: bool) -> Option<&'static str> {
         Some("Sign in to play \"{title}\"")
     } else {
         None
+    }
+}
+
+impl App {
+    /// Android's media notification: apply its buttons, and tell it what plays. (Other
+    /// platforms have the system media controls in `crate::media` instead.)
+    fn media_notification(&mut self) {
+        use crate::platform::MediaCommand;
+        if !cfg!(target_os = "android") {
+            return;
+        }
+        for command in crate::platform::take_media_commands() {
+            log::info!("media button: {command:?} (playing: {}, away: {})", self.playing(), crate::platform::in_background());
+            match command {
+                MediaCommand::Play if !self.playing() => self.toggle(),
+                MediaCommand::Pause if self.playing() => self.toggle(),
+                MediaCommand::Toggle => self.toggle(),
+                MediaCommand::Next => self.next(),
+                MediaCommand::Previous => self.prev(),
+                MediaCommand::Seek(ms) => self.seek_to(std::time::Duration::from_millis(ms.max(0) as u64)),
+                MediaCommand::Play | MediaCommand::Pause => {}
+            }
+        }
+        let now_playing = match self.playing_track() {
+            Some(t) => {
+                let status = &self.audio.status;
+                let duration = status.duration().map(|d| d.as_millis() as i64).or(t.duration.map(|s| s as i64 * 1000)).unwrap_or(0);
+                crate::platform::NowPlaying {
+                    title: t.title.clone(),
+                    artist: t.artist_line(),
+                    cover: crate::model::pick(&t.thumbs, 512).map(|u| crate::model::sized(u, 512)).unwrap_or_default(),
+                    playing: self.playing() || self.buffering,
+                    duration_ms: duration,
+                    position_ms: status.position_smooth().as_millis() as i64,
+                }
+            }
+            None => crate::platform::NowPlaying::default(),
+        };
+        crate::platform::set_now_playing(&now_playing);
     }
 }
 

@@ -1,6 +1,9 @@
 package io.github.aminuddinihsan20.bitchord;
 
+import android.Manifest;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -31,6 +34,14 @@ public class MainActivity extends GameActivity {
     /** A sign-in the app asked for: 1 Google, 2 Spotify, 0 none. */
     private static native int nativeTakeLoginRequest();
 
+    /** The app is away (stopped) or back: the music is kept going from a thread while away. */
+    private static native void nativeSetBackground(boolean away);
+
+    /** What plays, for the media notification; empty when nothing is loaded. */
+    private static native String nativeNowPlaying();
+
+    private boolean hadMedia;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -51,6 +62,12 @@ public class MainActivity extends GameActivity {
         main.post(new Runnable() {
             @Override
             public void run() {
+                String playing = nativeNowPlaying();
+                boolean media = playing != null && !playing.isEmpty();
+                if (media && !hadMedia) {
+                    startPlaybackService();
+                }
+                hadMedia = media;
                 int site = nativeTakeLoginRequest();
                 if (site != 0) {
                     startActivity(new Intent(MainActivity.this, LoginActivity.class).putExtra(LoginActivity.EXTRA_SITE, site));
@@ -71,6 +88,26 @@ public class MainActivity extends GameActivity {
                 }
             }
         });
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        nativeSetBackground(false);
+    }
+
+    @Override
+    protected void onStop() {
+        nativeSetBackground(true);
+        super.onStop();
+    }
+
+    /** The first song: ask once for notifications (Android 13+), then show the player. */
+    private void startPlaybackService() {
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 1);
+        }
+        startForegroundService(new Intent(this, PlaybackService.class));
     }
 
     // winit reports Enter as the character '\n', which the app's text fields ignore: hand

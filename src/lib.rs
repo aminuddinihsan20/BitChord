@@ -224,14 +224,12 @@ pub fn run_with(configure: impl FnOnce(&mut eframe::NativeOptions)) -> eframe::R
                 _ => None,
             };
 
-            Ok(Box::new(ui::App::new(
-                backend,
-                audio,
-                ui::Channels { resp_rx, audio_rx, media_rx },
-                media,
-                bg,
-                cc.storage,
-            )))
+            let app = ui::App::new(backend, audio, ui::Channels { resp_rx, audio_rx, media_rx }, media, bg, cc.storage);
+            // Android: the music is kept going from a second thread while the app is away.
+            #[cfg(target_os = "android")]
+            return Ok(Box::new(ui::Shared::new(app)));
+            #[cfg(not(target_os = "android"))]
+            Ok(Box::new(app))
         }),
     );
     // A wgpu window that won't open would fail the same way at every launch: go back
