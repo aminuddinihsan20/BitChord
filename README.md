@@ -70,9 +70,16 @@
 Download the latest build from [Releases](https://github.com/aminuddinihsan20/BitChord-PC-Official/releases/latest).
 
 - **Windows** — download the Windows release asset, extract/install it, and run `bitchord.exe`.
-- **macOS / Linux** — use the platform release assets when available.
+- **macOS** — download `bitchord-setup-<version>-macos-aarch64.dmg` (Apple silicon) or `…-macos-x86_64.dmg` (Intel), open it and drag BitChord to Applications.
+- **Linux** — download `bitchord-<version>-linux-x86_64.tar.gz`, extract it and run `./install.sh`.
 
 If Windows SmartScreen appears for an unsigned build, choose **More info → Run anyway**.
+
+The macOS build is signed ad hoc, not notarized, so macOS blocks its first launch. Since macOS 15, right-click → Open no longer gets past this. Open the app once, then go to **System Settings → Privacy & Security** and choose **Open Anyway**. Or run this in Terminal:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/bitchord.app
+```
 
 ## Building from source
 
