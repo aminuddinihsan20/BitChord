@@ -10,7 +10,7 @@ use unicode_normalization::UnicodeNormalization;
 
 /// The name the desktop build has always given: the signature service and Wikimedia
 /// both refuse a request that carries no user agent.
-const USER_AGENT: &str = "BitChord-Desktop/1.8 (https://github.com/jackychan4891/BitChord-PC-Continued)";
+const USER_AGENT: &str = "BitChord-Desktop/1.8 (https://github.com/aminuddinihsan20/BitChord-PC-Official)";
 
 /// A signature ready to be drawn: pixels whitened, alpha kept, so it reads as ink
 /// over the artist's banner.

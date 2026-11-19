@@ -1878,8 +1878,8 @@ fn settings_connections(app: &mut App, ui: &mut Ui) {
                     });
                 });
                 divider(ui);
-                setting_row(ui, "Name", Some("What follows the verb. Empty shows BitChord PC Continued."), |ui| {
-                    settings_field(ui, &mut app.discord_prefs.name, "BitChord PC Continued", 128);
+                setting_row(ui, "Name", Some("What follows the verb. Empty shows BitChord PC Official."), |ui| {
+                    settings_field(ui, &mut app.discord_prefs.name, "BitChord PC Official", 128);
                 });
             }
         });

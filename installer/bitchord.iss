@@ -22,9 +22,9 @@
 AppId={{6E0B7C4A-2D1F-4C8E-9B3A-7F5D1E2A9C40}
 AppName={#AppName}
 AppVersion={#AppVersion}
-AppPublisher=jackychan4891
-AppPublisherURL=https://github.com/jackychan4891/BitChord-PC-Continued
-AppSupportURL=https://github.com/jackychan4891/BitChord-PC-Continued/issues
+AppPublisher=aminuddinihsan20
+AppPublisherURL=https://github.com/aminuddinihsan20/BitChord-PC-Official
+AppSupportURL=https://github.com/aminuddinihsan20/BitChord-PC-Official/issues
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes

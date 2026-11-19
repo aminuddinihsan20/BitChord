@@ -18,8 +18,8 @@ const CLIENT_ID: &str = "1521756469433991299";
 const RETRY: Duration = Duration::from_secs(15);
 
 /// The name after the verb, until the card is customised: the head of the card reads
-/// "Listening to BitChord PC Continued", which is what the app is called.
-const DEFAULT_NAME: &str = "BitChord PC Continued";
+/// "Listening to BitChord PC Official", which is what the app is called.
+const DEFAULT_NAME: &str = "BitChord PC Official";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Presence {
@@ -137,8 +137,8 @@ impl Prefs {
 }
 
 const DEFAULT_BUTTON1: &str = "Listen on YouTube Music";
-const DEFAULT_BUTTON2: &str = "Visit BitChord PC Continued";
-const PROJECT_URL: &str = "https://github.com/jackychan4891/BitChord-PC-Continued";
+const DEFAULT_BUTTON2: &str = "Visit BitChord PC Official";
+const PROJECT_URL: &str = "https://github.com/aminuddinihsan20/BitChord-PC-Official";
 /// The cover when a song has no artwork URL: the card always has one, as the old app's did.
 const FALLBACK_ART: &str = "https://raw.githubusercontent.com/kushagrasinghx/BitChord/main/app/src/main/ic_launcher-playstore.png";
 
