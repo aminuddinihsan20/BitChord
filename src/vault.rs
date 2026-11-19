@@ -2,8 +2,11 @@
 //! Credential Manager, encrypted to the signed-in Windows user, on macOS the login
 //! Keychain, or on Linux the Secret Service (GNOME Keyring, KWallet).
 //!
-//! A credential holds at most 2,560 bytes and a Google cookie is close to that, so a
-//! secret is split over numbered entries: `name`, `name #2`, `name #3`, …
+//! A Credential Manager entry holds at most 2,560 bytes and a Google cookie is close to
+//! that, so on Windows and Linux a secret is split over numbered entries: `name`,
+//! `name #2`, `name #3`, … The Keychain has no such limit: on macOS a secret is one
+//! item (plus an empty `#2` when it is exactly 2,560 bytes), and a secret an earlier
+//! version split there still reads.
 //! Linux without a Secret Service running, a Keychain that refuses, and other
 //! systems keep the secret in a file only this user can read, in the data folder.
 
@@ -64,15 +67,12 @@ mod store {
     pub fn set(key: &str, secret: &[u8]) -> anyhow::Result<()> {
         let _one = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // The Keychain has no such limit, and each extra item is one more access prompt
-        // for a build without a stable signature: one item, and any older parts removed.
+        // for a build without a stable signature, so macOS keeps the secret in one item.
         // (`get` still reads a secret an earlier version split.)
-        if cfg!(target_os = "macos") {
-            entry(key, 0)?.set_secret(secret)?;
-            return delete_from(key, 1);
-        }
-        // A secret of an exact multiple of CHUNK ends with an empty part, so reading knows where it stops.
-        let mut parts: Vec<&[u8]> = secret.chunks(CHUNK).collect();
-        if secret.len().is_multiple_of(CHUNK) {
+        let mut parts: Vec<&[u8]> = if cfg!(target_os = "macos") { vec![secret] } else { secret.chunks(CHUNK).collect() };
+        // A last part of exactly CHUNK bytes is followed by an empty one, so reading knows
+        // where it stops without relying on older parts having been deleted.
+        if parts.last().is_none_or(|p| p.len() == CHUNK) {
             parts.push(&[]);
         }
         for (i, part) in parts.iter().enumerate() {
@@ -295,12 +295,30 @@ mod unix_tests {
     fn macos_keeps_a_secret_in_one_keychain_item() {
         let key = format!("ytm-rs vault single test {}", std::process::id());
         let secret = vec![7u8; 6000];
-        super::store::set(&key, &secret).unwrap();
+        if super::store::set(&key, &secret).is_err() {
+            return eprintln!("Keychain unavailable here (locked, or no login keychain); skipped");
+        }
         let one = super::store::tests_entry(&key, 0).get_secret();
         let second = super::store::tests_entry(&key, 1).get_secret();
         assert_eq!(super::store::get(&key).unwrap().unwrap(), secret);
         super::store::delete(&key).unwrap();
         assert_eq!(one.unwrap().len(), 6000);
         assert!(matches!(second, Err(keyring::Error::NoEntry)));
+    }
+
+    /// A one-item secret of exactly one chunk still gets the empty part after it, so
+    /// reading it back never depends on deleting an older version's parts having worked
+    /// (the Keychain can refuse that delete, e.g. when its access prompt is declined).
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_whole_chunk_secret_is_followed_by_an_empty_part() {
+        let key = format!("ytm-rs vault chunk-end test {}", std::process::id());
+        let secret = vec![3u8; 2560];
+        if super::store::set(&key, &secret).is_err() {
+            return eprintln!("Keychain unavailable here (locked, or no login keychain); skipped");
+        }
+        let after = super::store::tests_entry(&key, 1).get_secret();
+        super::store::delete(&key).unwrap();
+        assert_eq!(after.ok(), Some(Vec::new()));
     }
 }
