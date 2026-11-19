@@ -74,6 +74,19 @@ pub async fn resolve(http: &reqwest::Client, data_dir: &Path, cookie: &str, vide
     Ok(s)
 }
 
+/// macOS: the PATH for yt-dlp, with Homebrew's prefixes (Apple silicon, then Intel) added
+/// where missing, since an app opened from Finder gets only the system's.
+#[cfg(target_os = "macos")]
+fn child_path(current: Option<&std::ffi::OsStr>) -> std::ffi::OsString {
+    let mut dirs: Vec<PathBuf> = current.map(|p| std::env::split_paths(p).filter(|d| !d.as_os_str().is_empty()).collect()).unwrap_or_default();
+    for extra in ["/opt/homebrew/bin", "/usr/local/bin"] {
+        if !dirs.iter().any(|d| d == Path::new(extra)) {
+            dirs.push(extra.into());
+        }
+    }
+    std::env::join_paths(dirs).unwrap_or_default()
+}
+
 fn run(bin: &Path, data_dir: &Path, video_id: &str, cookie: &str) -> anyhow::Result<Stream> {
     // Unique name per call; removed on every exit path by the guard below.
     let nonce = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
@@ -104,6 +117,8 @@ fn run(bin: &Path, data_dir: &Path, video_id: &str, cookie: &str) -> anyhow::Res
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
+    #[cfg(target_os = "macos")]
+    cmd.env("PATH", child_path(std::env::var_os("PATH").as_deref()));
     // Its own process group, so the whole tree (the onefile binary unpacks into a child,
     // plus Node) can be ended together.
     #[cfg(unix)]
@@ -166,4 +181,38 @@ fn run(bin: &Path, data_dir: &Path, video_id: &str, cookie: &str) -> anyhow::Res
         duration_ms: v["duration"].as_f64().map_or(0, |d| (d * 1000.0) as u64),
         user_agent: v["http_headers"]["User-Agent"].as_str().unwrap_or_default().to_owned(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An app opened from Finder gets only the system PATH, so Homebrew's node (and the
+    /// Intel prefix's) must be added for yt-dlp to find its JS runtime.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_path_reaches_homebrew_node() {
+        let path = child_path(Some(std::ffi::OsStr::new("/usr/bin:/bin")));
+        assert_eq!(path, std::ffi::OsString::from("/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin"));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_path_keeps_a_prefix_already_there_once() {
+        let path = child_path(Some(std::ffi::OsStr::new("/opt/homebrew/bin:/usr/bin")));
+        assert_eq!(path, std::ffi::OsString::from("/opt/homebrew/bin:/usr/bin:/usr/local/bin"));
+    }
+
+    /// An empty entry would put the current directory on yt-dlp's PATH.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_path_from_an_empty_path_has_no_empty_entry() {
+        assert_eq!(child_path(Some(std::ffi::OsStr::new(""))), std::ffi::OsString::from("/opt/homebrew/bin:/usr/local/bin"));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_path_without_any_path() {
+        assert_eq!(child_path(None), std::ffi::OsString::from("/opt/homebrew/bin:/usr/local/bin"));
+    }
 }
