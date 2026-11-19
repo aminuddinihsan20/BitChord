@@ -4,6 +4,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use winit::platform::android::activity::input::{ImeOptions, InputType, TextInputAction, TextInputState, TextSpan};
 use winit::platform::android::activity::AndroidApp;
 
 #[unsafe(no_mangle)]
@@ -48,6 +49,20 @@ fn android_main(app: AndroidApp) {
     } else {
         log::warn!("Android gave no app storage folder");
     }
+    // The keyboard's action key (✓) arrives as an editor action, which winit 0.30 drops
+    // too; "no action" makes it an Enter key, which the text fields take as "submit".
+    app.set_ime_editor_info(InputType::TYPE_CLASS_TEXT, TextInputAction::None, ImeOptions::empty());
+    // winit 0.30 drops what the on-screen keyboard types: read it from the input method
+    // state and clear that, so each poll sees only what was typed since the last.
+    let ime = app.clone();
+    bitchord::platform::set_text_source(move || {
+        let state = ime.text_input_state();
+        if state.text.is_empty() {
+            return None;
+        }
+        ime.set_text_input_state(TextInputState { text: String::new(), selection: TextSpan { start: 0, end: 0 }, compose_region: None });
+        Some(state.text)
+    });
     match bitchord::run_with(move |options| options.android_app = Some(app)) {
         Ok(()) => log::info!("closed"),
         Err(e) => log::error!("bitchord stopped: {e}"),
@@ -55,4 +70,28 @@ fn android_main(app: AndroidApp) {
     // The app closed itself (Quit, or "Restart now" in Settings): end the process too,
     // since its event loop can't be made again in it (see STARTED).
     std::process::exit(0);
+}
+
+// What MainActivity.java reports (JNI: package io.github.aminuddinihsan20.bitchord). The
+// environment and class arguments are never used, so they stay untyped.
+type Jni = *mut std::ffi::c_void;
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_io_github_aminuddinihsan20_bitchord_MainActivity_nativeInsets(_env: Jni, _class: Jni, left: i32, top: i32, right: i32, bottom: i32) {
+    bitchord::platform::set_insets_px(left, top, right, bottom);
+}
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_io_github_aminuddinihsan20_bitchord_MainActivity_nativeCanGoBack(_env: Jni, _class: Jni) -> u8 {
+    u8::from(bitchord::platform::can_go_back())
+}
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_io_github_aminuddinihsan20_bitchord_MainActivity_nativeBack(_env: Jni, _class: Jni) {
+    bitchord::platform::request_back();
+}
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_io_github_aminuddinihsan20_bitchord_MainActivity_nativeEnter(_env: Jni, _class: Jni) {
+    bitchord::platform::press_enter();
 }

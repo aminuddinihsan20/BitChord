@@ -27,7 +27,7 @@ mod lyrics;
 mod media;
 mod model;
 mod motion;
-mod platform;
+pub mod platform;
 mod opus;
 mod preset;
 mod shader;
@@ -113,7 +113,8 @@ pub fn run_with(configure: impl FnOnce(&mut eframe::NativeOptions)) -> eframe::R
         .with_title("BitChord")
         .with_app_id("bitchord")
         .with_inner_size(DEFAULT_SIZE)
-        .with_min_inner_size(MIN_SIZE)
+        // The phone layout (forced on a desktop to preview it) fits narrow windows.
+        .with_min_inner_size(if platform::phone() { [240.0, 320.0] } else { MIN_SIZE })
         // Windows: the app draws its own title bar (see `ui::titlebar`).
         .with_decorations(!ui::custom_titlebar())
         .with_icon(appicon::get(appicon::load(&data_dir())).icon_data().expect("bundled icons are valid PNGs"));
