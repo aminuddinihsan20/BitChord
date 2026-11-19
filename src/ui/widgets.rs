@@ -1008,6 +1008,25 @@ fn shelf_page_target(starts: &[usize], step: f32, from: f32, nudge: i32) -> f32 
     next as f32 * step
 }
 
+/// How a finished horizontal swipe turns the shelf: `1` the next page (finger moved left),
+/// `-1` the previous, `0` back to where it was. A swipe long enough or quick enough counts.
+pub fn swipe_direction(dx: f32, vx: f32) -> i32 {
+    const LONG: f32 = 40.0;
+    const QUICK: f32 = 300.0;
+    if dx < -LONG || vx < -QUICK {
+        1
+    } else if dx > LONG || vx > QUICK {
+        -1
+    } else {
+        0
+    }
+}
+
+/// The page start (in pixels) closest to `offset`.
+fn nearest_page(starts: &[usize], step: f32, offset: f32) -> f32 {
+    starts.iter().map(|&s| s as f32 * step).min_by(|a, b| (a - offset).abs().total_cmp(&(b - offset).abs())).unwrap_or(0.0)
+}
+
 /// Which way a touch drag is going once it has moved far enough to tell: `Some(true)`
 /// horizontal, `Some(false)` vertical, `None` while it is still within the slop.
 pub fn drag_axis(delta: Vec2) -> Option<bool> {
@@ -1021,6 +1040,8 @@ pub fn drag_axis(delta: Vec2) -> Option<bool> {
 struct ShelfDrag {
     start_offset: f32,
     axis: Option<bool>,
+    /// How far the finger has moved sideways since it went down.
+    dx: f32,
 }
 
 /// Horizontal scroller that animates between aligned pages of cards or song columns.
@@ -1076,26 +1097,43 @@ pub fn h_scroll<R>(ui: &mut Ui, id: &str, nudge: i32, count: usize, item_width: 
     }).inner);
     ui.ctx().data_mut(|d| d.insert_temp(viewport_id, out.inner_rect.width()));
     if phone {
-        follow_horizontal_swipe(ui.ctx(), out.inner_rect, out.state.clamped_offset().x, (out.content_size.x - out.inner_rect.width()).max(0.0), drag_id, held_id, target_id, anim_id);
+        let pages = Pages { starts: &starts, step, max: (out.content_size.x - out.inner_rect.width()).max(0.0) };
+        follow_horizontal_swipe(ui.ctx(), out.inner_rect, out.state.clamped_offset().x, &pages, drag_id, held_id, target_id, anim_id);
     }
     (out.inner, reached_end)
 }
 
-/// Move a shelf with a finger that started on it and went horizontally; let it glide on
-/// when released while still moving. A vertical swipe is left to the page.
+/// The shelf's aligned pages, for a swipe to land on.
+struct Pages<'a> {
+    starts: &'a [usize],
+    step: f32,
+    max: f32,
+}
+
+/// The id the page checks: a shelf is being swiped sideways, so the page itself holds still.
+pub fn shelf_swipe_id() -> egui::Id {
+    egui::Id::NULL.with("shelf-swiping")
+}
+
+/// Move a shelf with a finger that started on it and went horizontally, then turn it one
+/// page (as the arrows do) when let go. A vertical swipe is left to the page.
 #[allow(clippy::too_many_arguments)]
-fn follow_horizontal_swipe(ctx: &egui::Context, rect: Rect, offset: f32, max: f32, drag_id: egui::Id, held_id: egui::Id, target_id: egui::Id, anim_id: egui::Id) {
+fn follow_horizontal_swipe(ctx: &egui::Context, rect: Rect, offset: f32, pages: &Pages, drag_id: egui::Id, held_id: egui::Id, target_id: egui::Id, anim_id: egui::Id) {
     let (origin, latest, down, velocity) = ctx.input(|i| (i.pointer.press_origin(), i.pointer.latest_pos(), i.pointer.primary_down(), i.pointer.velocity()));
     let drag: Option<ShelfDrag> = ctx.data(|d| d.get_temp(drag_id));
     match (down, origin.filter(|o| rect.contains(*o)), latest) {
         (true, Some(origin), Some(now)) => {
-            let mut d = drag.unwrap_or(ShelfDrag { start_offset: offset, axis: None });
+            let mut d = drag.unwrap_or(ShelfDrag { start_offset: offset, axis: None, dx: 0.0 });
             let delta = now - origin;
+            d.dx = delta.x;
             if d.axis.is_none() {
                 d.axis = drag_axis(delta);
             }
             if d.axis == Some(true) {
-                ctx.data_mut(|data| data.insert_temp(held_id, (d.start_offset - delta.x).clamp(0.0, max)));
+                ctx.data_mut(|data| {
+                    data.insert_temp(held_id, (d.start_offset - delta.x).clamp(0.0, pages.max));
+                    data.insert_temp(shelf_swipe_id(), true);
+                });
                 ctx.request_repaint();
             }
             ctx.data_mut(|data| data.insert_temp(drag_id, d));
@@ -1105,10 +1143,16 @@ fn follow_horizontal_swipe(ctx: &egui::Context, rect: Rect, offset: f32, max: f3
                 ctx.data_mut(|data| {
                     data.remove::<ShelfDrag>(drag_id);
                     data.remove::<f32>(held_id);
+                    data.remove::<bool>(shelf_swipe_id());
                 });
                 if d.axis == Some(true) {
-                    // Released while moving: glide on, easing to a stop.
-                    let to = (offset - velocity.x * 0.25).clamp(0.0, max);
+                    // From the page it started on, one page the way the finger went (or
+                    // back to it); the shelf glides there from where the finger left it.
+                    let from = nearest_page(pages.starts, pages.step, d.start_offset);
+                    let to = match swipe_direction(d.dx, velocity.x) {
+                        0 => from,
+                        dir => shelf_page_target(pages.starts, pages.step, from, dir),
+                    };
                     ctx.animate_value_with_time(anim_id, offset, 0.0);
                     ctx.data_mut(|data| data.insert_temp(target_id, to));
                     ctx.request_repaint();
@@ -1233,8 +1277,30 @@ pub fn skeleton(ui: &mut Ui, time: f64, rows: usize, card: f32) {
 
 #[cfg(test)]
 mod shelf_scroll_tests {
-    use super::{drag_axis, shelf_page_starts, shelf_page_target};
+    use super::{drag_axis, nearest_page, shelf_page_starts, shelf_page_target, swipe_direction};
     use egui::vec2;
+
+    #[test]
+    fn a_short_slow_swipe_stays_on_the_page() {
+        assert_eq!(swipe_direction(-20.0, -100.0), 0);
+        assert_eq!(swipe_direction(15.0, 50.0), 0);
+    }
+
+    #[test]
+    fn a_long_or_quick_swipe_turns_one_page_either_way() {
+        assert_eq!(swipe_direction(-90.0, -50.0), 1, "left: the next page");
+        assert_eq!(swipe_direction(-15.0, -900.0), 1, "a quick flick left");
+        assert_eq!(swipe_direction(120.0, 0.0), -1, "right: the previous page");
+        assert_eq!(swipe_direction(10.0, 1500.0), -1, "a quick flick right");
+    }
+
+    #[test]
+    fn the_nearest_page_start_is_found_from_any_offset() {
+        let pages = shelf_page_starts(14, 5);
+        assert_eq!(nearest_page(&pages, 198.0, 0.0), 0.0);
+        assert_eq!(nearest_page(&pages, 198.0, 5.0 * 198.0 - 30.0), 5.0 * 198.0);
+        assert_eq!(nearest_page(&pages, 198.0, 9.0 * 198.0 + 400.0), 9.0 * 198.0);
+    }
 
     #[test]
     fn a_small_movement_does_not_decide_the_axis() {

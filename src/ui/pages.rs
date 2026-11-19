@@ -50,6 +50,10 @@ pub fn page(app: &mut App, ui: &mut Ui, now: f64) {
     let page = app.page.clone();
     // Each page (each album, each search) keeps its own scroll position.
     let mut area = egui::ScrollArea::vertical().id_salt(("page", &page)).auto_shrink(false);
+    if ui.ctx().data(|d| d.get_temp::<bool>(widgets::shelf_swipe_id()).unwrap_or(false)) {
+        // A shelf is being swiped sideways: the finger's small up and down must not move the page too.
+        area = area.scroll_source(egui::scroll_area::ScrollSource { drag: egui::scroll_area::DragScroll::Never, ..Default::default() });
+    }
     // Dev hook: YTM_SCROLL=<px> pins the page scroll, for screenshots of lower sections.
     if let Some(y) = super::dev_var("YTM_SCROLL").and_then(|v| v.parse::<f32>().ok()) {
         area = area.vertical_scroll_offset(y);
