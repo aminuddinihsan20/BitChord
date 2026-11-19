@@ -136,8 +136,72 @@ fn top_row(app: &mut App, ui: &mut Ui) {
             app.nav_back();
         }
     }
-    super::shell::top_bar(app, ui);
+    account_chip(app, ui);
     ui.add_space(TOP_H - 2.0);
+}
+
+/// The signed-in person's picture and name (or "Sign in") in a frosted pill at the top
+/// right; it opens Settings, where the account is.
+fn account_chip(app: &mut App, ui: &mut Ui) {
+    // The search field lives on the Search page: nothing here to anchor suggestions to.
+    app.search_rect = None;
+    let panel = ui.max_rect();
+    // Dev hook: YTM_FAKE_ACCOUNT=<name> shows the signed-in look in screenshots.
+    let fake = super::dev_var("YTM_FAKE_ACCOUNT");
+    let signed_in = app.logged_in || fake.is_some();
+    let label = match (signed_in, fake) {
+        (true, Some(name)) => name.to_owned(),
+        (true, None) => app.account_name.clone().unwrap_or_else(|| "Account".to_owned()),
+        _ => "Sign in".to_owned(),
+    };
+    let galley = widgets::galley(ui, &label, theme::semibold(14.5), theme::text(), 150.0);
+    let (avatar, pad) = (34.0, 4.0);
+    let text_w = galley.size().x.min(150.0);
+    let w = pad + avatar + 8.0 + text_w + 14.0;
+    let h = avatar + 2.0 * pad;
+    let chip = Rect::from_min_size(pos2(panel.right() - w, panel.top() + 4.0), vec2(w, h));
+    let accent = app.accent_color();
+    let loading = app.loading;
+    let name_font = theme::semibold(14.5);
+    let avatar_url = app.account_avatar.clone();
+    let initial = label.chars().next().unwrap_or('?');
+    // Its own layer, above the pages: a page's header art scrolls up into this corner.
+    let clicked = egui::Area::new(ui.scope_id().with("account"))
+        .order(egui::Order::Middle)
+        .fixed_pos(chip.min)
+        .show(ui.ctx(), |ui| {
+            let (r, _) = ui.allocate_exact_size(chip.size(), Sense::hover());
+            let resp = named(ui.interact(r, ui.scope_id().with("account-chip"), Sense::click()), if signed_in { "Account" } else { "Sign in" });
+            ui.painter().rect_filled(r, h / 2.0, theme::glass(if resp.is_pointer_button_down_on() { 0.22 } else { 0.13 }));
+            ui.painter().rect_stroke(r, h / 2.0, Stroke::new(1.0, theme::glass(0.12)), egui::StrokeKind::Inside);
+            let pic = Rect::from_center_size(pos2(r.left() + pad + avatar / 2.0, r.center().y), Vec2::splat(avatar));
+            match (&avatar_url, signed_in) {
+                (Some(url), true) => {
+                    ui.painter().circle_filled(pic.center(), avatar / 2.0, theme::with_alpha(accent, 0.5));
+                    widgets::paint_remote(ui, url, pic, avatar / 2.0, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                }
+                (_, true) => {
+                    ui.painter().circle_filled(pic.center(), avatar / 2.0, accent);
+                    ui.painter().text(pic.center(), Align2::CENTER_CENTER, initial.to_uppercase(), theme::bold(16.0), Color32::WHITE);
+                }
+                _ => {
+                    ui.painter().circle_filled(pic.center(), avatar / 2.0, theme::glass(0.16));
+                    widgets::icon_at(ui, pic.center(), icon::USER, 18.0, theme::text_dim());
+                }
+            }
+            widgets::text_at(ui, pos2(pic.right() + 8.0, r.center().y - galley.size().y / 2.0), &label, name_font.clone(), theme::text(), text_w + 2.0);
+            resp.clicked()
+        })
+        .inner;
+    if clicked {
+        app.actions.push(Action::Go(Page::Settings));
+    }
+    if loading {
+        // A page is loading: the spinner sits left of the pill.
+        let spin = Rect::from_min_size(pos2(chip.left() - 30.0, chip.center().y - 10.0), Vec2::splat(20.0));
+        let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(spin));
+        cui.spinner();
+    }
 }
 
 fn nav_bar(app: &mut App, ui: &mut Ui, insets: Insets) {
@@ -150,15 +214,11 @@ fn nav_bar(app: &mut App, ui: &mut Ui, insets: Insets) {
         let cell = Rect::from_min_size(pos2(row.left() + w * i as f32, row.top()), vec2(w, NAV_H));
         let resp = named(ui.interact(cell, ui.scope_id().with(("phone-tab", i)), Sense::click()), tab.label());
         let on = app.phone_tab == tab;
-        let tint = if on { accent } else { theme::text_dim() };
-        let k = theme::anim_bool(ui.ctx(), resp.id.with("on"), on, 0.15);
-        if k > 0.0 {
-            // The lit tab's pill behind its icon.
-            let pill = Rect::from_center_size(pos2(cell.center().x, cell.top() + 22.0), vec2(56.0, 30.0));
-            ui.painter().rect_filled(pill, CornerRadius::same(15), theme::with_alpha(accent, 0.18 * k));
-        }
-        glyphs::draw(ui, pos2(cell.center().x, cell.top() + 22.0), 24.0, tab.glyph(), tint);
-        ui.painter().text(pos2(cell.center().x, cell.top() + 48.0), Align2::CENTER_CENTER, tab.label(), if on { theme::semibold(12.0) } else { theme::regular(12.0) }, tint);
+        // Apple's tab bar: the selected tab in the accent, the rest in secondary grey.
+        let tint = if on { accent } else { Color32::from_rgb(142, 142, 147) };
+        let tint = if resp.is_pointer_button_down_on() { theme::lerp_color(tint, Color32::WHITE, 0.25) } else { tint };
+        glyphs::draw(ui, pos2(cell.center().x, cell.top() + 22.0), 25.0, tab.glyph(), tint);
+        ui.painter().text(pos2(cell.center().x, cell.top() + 46.0), Align2::CENTER_CENTER, tab.label(), theme::semibold(10.5), tint);
         if resp.clicked() {
             app.actions.push(Action::Go(tab.page()));
         }
@@ -169,7 +229,6 @@ fn nav_bar(app: &mut App, ui: &mut Ui, insets: Insets) {
 fn mini_player(app: &mut App, ui: &mut Ui, rect: Rect) {
     let Some(track) = app.current().cloned() else { return };
     let playing = app.playing();
-    let accent = app.accent_color();
     let painter = ui.painter();
     widgets::soft_shadow(ui, rect, 16.0, 16.0, 0.4);
     painter.rect_filled(rect, CornerRadius::same(16), theme::panel(0.92));
@@ -203,21 +262,6 @@ fn mini_player(app: &mut App, ui: &mut Ui, rect: Rect) {
         app.next();
     }
 
-    // Progress: a thin line along the bottom edge.
-    let status = app.audio.status.clone();
-    let total = status.duration().map(|d| d.as_secs_f32()).or(track.duration.map(|d| d as f32)).unwrap_or(0.0);
-    if total > 0.0 {
-        let frac = (status.position_smooth().as_secs_f32() / total).clamp(0.0, 1.0);
-        let y = rect.bottom() - 2.0;
-        let line = Rect::from_min_max(pos2(rect.left() + 14.0, y - 1.5), pos2(rect.right() - 14.0, y));
-        ui.painter().rect_filled(line, CornerRadius::same(1), theme::glass(0.18));
-        let done = Rect::from_min_max(line.min, pos2(line.left() + line.width() * frac, line.bottom()));
-        ui.painter().rect_filled(done, CornerRadius::same(1), accent);
-        if playing {
-            ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
-        }
-    }
-    let _ = Color32::TRANSPARENT;
 }
 
 #[cfg(test)]

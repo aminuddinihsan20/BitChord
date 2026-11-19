@@ -1045,5 +1045,50 @@
    "sidebar": "transparent",
    "bar_alpha": 0
   }
- }
+ },
+  {
+    "id": "apple-music-ios",
+    "name": "Apple Music (iOS)",
+    "creators": [
+      "BitChord"
+    ],
+    "blurb": "Apple Music on a phone: SF Pro type, Apple's red, a soft cover-coloured backdrop, frosted surfaces and a floating mini player.",
+    "background": {
+      "saturation": 1.6,
+      "scale": 1.25,
+      "np_dim": 0.55,
+      "page_dim": 0.62,
+      "reactive": 1.1
+    },
+    "accent": "#fa2d48",
+    "lyrics": {
+      "font": "SF Pro Display",
+      "size": 1.45,
+      "inactive_alpha": 0.2,
+      "falloff": 0.01,
+      "past_alpha": 0.0,
+      "blur": 2.0,
+      "lift": 3,
+      "blur_scope": "upcoming"
+    },
+    "cover": {
+      "radius": 32,
+      "size": 1.1,
+      "shadow": 0.3
+    },
+    "chrome": {
+      "glass": 1.5,
+      "radius": 16,
+      "player_bar": "floating"
+    },
+    "app": {
+      "page_bg": "static",
+      "page_dim": 0.62,
+      "sidebar_alpha": 0.15,
+      "bar_alpha": 0.9,
+      "bar_border": true,
+      "panel_radius": 16,
+      "font": "SF Pro Display"
+    }
+  }
 ]

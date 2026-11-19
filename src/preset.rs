@@ -448,7 +448,7 @@ mod tests {
     #[test]
     fn presets_are_complete() {
         let list: Vec<Preset> = serde_json::from_str(include_str!("../assets/themes/presets.json")).expect("presets.json parses");
-        assert_eq!(list.len(), 27);
+        assert_eq!(list.len(), 28);
         let mut ids = std::collections::HashSet::new();
         for p in &list {
             assert!(ids.insert(p.id.clone()), "duplicate id {}", p.id);
