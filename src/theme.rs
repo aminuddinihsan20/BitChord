@@ -450,10 +450,24 @@ pub fn font_choice() -> String {
     FONT_CHOICE.read().unwrap().clone()
 }
 
+/// Android's own interface font: there the app is drawn in it, as other apps are, and
+/// there is no font setting.
+pub const ANDROID_FONT: &str = "Roboto";
+
 /// The font name to draw with where a theme asks for `theme_font`.
 pub fn effective_font(theme_font: &str) -> String {
-    let choice = FONT_CHOICE.read().unwrap();
-    if choice.is_empty() { theme_font.to_owned() } else { choice.clone() }
+    font_for(cfg!(target_os = "android"), &FONT_CHOICE.read().unwrap(), theme_font)
+}
+
+/// The system's font on Android; elsewhere the listener's pick, else the theme's.
+fn font_for(android: bool, choice: &str, theme_font: &str) -> String {
+    if android {
+        ANDROID_FONT.to_owned()
+    } else if choice.is_empty() {
+        theme_font.to_owned()
+    } else {
+        choice.to_owned()
+    }
 }
 
 /// The family key for a font name: a bundled face, "choice" for the installed font the
@@ -553,7 +567,9 @@ fn font_dirs() -> Vec<std::path::PathBuf> {
     }
     #[cfg(target_os = "macos")]
     dirs.extend(["/System/Library/Fonts", "/Library/Fonts"].map(Into::into));
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(target_os = "android")]
+    dirs.push("/system/fonts".into());
+    #[cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))]
     dirs.extend(["/usr/share/fonts", "/usr/local/share/fonts"].map(Into::into));
     if let Some(home) = std::env::var_os("HOME") {
         dirs.push(std::path::PathBuf::from(home).join(".local/share/fonts"));
@@ -625,6 +641,23 @@ fn choose_faces(family: &SysFamily) -> Option<[Face; 3]> {
     faces.try_into().ok()
 }
 
+/// The three weights from the first face of each of these font files that exists: a
+/// variable font serves all three itself, static files the weight each was drawn at.
+#[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+fn faces_of_files(paths: &[&str]) -> Option<[Face; 3]> {
+    use skrifa::MetadataProvider;
+    let faces = paths
+        .iter()
+        .filter_map(|path| {
+            let bytes = map(path)?;
+            let font = skrifa::FontRef::from_index(bytes, 0).ok()?;
+            let wght = font.axes().iter().find(|a| a.tag() == skrifa::Tag::new(b"wght")).map(|a| (a.min_value(), a.max_value()));
+            Some(SysFace { path: path.into(), index: 0, weight: font.attributes().weight.value(), wght })
+        })
+        .collect();
+    choose_faces(&SysFamily { name: String::new(), faces })
+}
+
 /// Load the faces of the installed font in use, if that's what it is: the listener's
 /// pick, else one the theme names for its interface (Fluent's Segoe UI Variable). A
 /// name can list fallbacks, "Segoe UI Variable, Segoe UI", tried in order.
@@ -637,9 +670,16 @@ fn load_choice(ui_font: &str) {
     if CHOICE.read().unwrap().as_ref().is_some_and(|c| c.name == name) {
         return;
     }
+    // Android: the system font's own file (and its heavier siblings on older versions),
+    // without scanning the two hundred fonts beside it.
+    #[cfg(target_os = "android")]
+    let faces = faces_of_files(&["/system/fonts/Roboto-Regular.ttf", "/system/fonts/Roboto-Medium.ttf", "/system/fonts/Roboto-Bold.ttf"]);
     // Only when an installed font is set: a one-off scan, the first time.
-    let all = INSTALLED_FONTS.get_or_init(scan_fonts);
-    let faces = name.split(',').map(str::trim).find_map(|n| all.iter().find(|f| f.name.eq_ignore_ascii_case(n)).and_then(choose_faces));
+    #[cfg(not(target_os = "android"))]
+    let faces = {
+        let all = INSTALLED_FONTS.get_or_init(scan_fonts);
+        name.split(',').map(str::trim).find_map(|n| all.iter().find(|f| f.name.eq_ignore_ascii_case(n)).and_then(choose_faces))
+    };
     if faces.is_none() {
         log::warn!("font {name:?} isn't installed; using Inter");
     }
@@ -689,7 +729,27 @@ const CANDIDATES: &[(&str, u32)] = &[
     ("/System/Library/Fonts/Apple Symbols.ttf", 0),
 ];
 
-#[cfg(all(unix, not(target_os = "macos")))]
+// Android: its Noto fonts, under the names recent and older versions ship them by.
+#[cfg(target_os = "android")]
+const CANDIDATES: &[(&str, u32)] = &[
+    ("/system/fonts/Roboto-Regular.ttf", 0),               // Latin ext., Greek, Cyrillic
+    ("/system/fonts/NotoSansCJK-Regular.ttc", 0),          // Japanese, Chinese, Korean
+    ("/system/fonts/NotoNaskhArabic-Regular.ttf", 0),
+    ("/system/fonts/NotoSansHebrew-Regular.ttf", 0),
+    ("/system/fonts/NotoSansThai-Regular.ttf", 0),
+    ("/system/fonts/NotoSansDevanagari-VF.ttf", 0),
+    ("/system/fonts/NotoSansDevanagari-Regular.ttf", 0),
+    ("/system/fonts/NotoSansBengali-VF.ttf", 0),
+    ("/system/fonts/NotoSansBengali-Regular.ttf", 0),
+    ("/system/fonts/NotoSansTamil-VF.ttf", 0),
+    ("/system/fonts/NotoSansTamil-Regular.ttf", 0),
+    ("/system/fonts/NotoSansKhmer-VF.ttf", 0),
+    ("/system/fonts/NotoSansLao-Regular.ttf", 0),
+    ("/system/fonts/NotoSansSymbols-Regular-Subsetted.ttf", 0),
+    ("/system/fonts/NotoSansSymbols-Regular-Subsetted2.ttf", 0),
+];
+
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))]
 const CANDIDATES: &[(&str, u32)] = &[
     ("/usr/share/fonts/noto/NotoSans-Regular.ttf", 0),
     ("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf", 0),
@@ -912,3 +972,25 @@ fn visuals() -> egui::Visuals {
     v
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn android_draws_in_its_system_font_whatever_was_picked() {
+        assert_eq!(font_for(true, "", "Segoe UI"), ANDROID_FONT);
+        assert_eq!(font_for(true, "Comic Sans MS", "Segoe UI"), ANDROID_FONT);
+    }
+
+    #[test]
+    fn elsewhere_the_pick_wins_and_the_theme_fills_in() {
+        assert_eq!(font_for(false, "Noto Sans JP", "Segoe UI"), "Noto Sans JP");
+        assert_eq!(font_for(false, "", "Segoe UI"), "Segoe UI");
+    }
+
+    #[test]
+    fn font_files_that_are_not_there_give_no_faces() {
+        assert!(faces_of_files(&["/nowhere/Roboto-Regular.ttf", "/nowhere/Roboto-Bold.ttf"]).is_none());
+    }
+}
