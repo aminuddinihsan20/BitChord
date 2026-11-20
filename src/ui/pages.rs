@@ -240,13 +240,19 @@ fn card_row_plain(ui: &mut Ui, id: &str, title: &str, cards: &[Card], acts: &mut
     });
 }
 
+/// How wide a column of the song grid is: a feed tile on a desktop, and on a phone
+/// nearly the whole screen, so titles have room and the next column only peeks in.
+fn song_column(tile: f32, width: f32, phone: bool) -> f32 {
+    if phone { (width - 36.0).max(tile.min(width)) } else { tile }
+}
+
 /// Songs laid out in columns of `rows`, scrolling sideways (Quick picks). Clicking a
 /// song starts its radio. Returns whether the arrows reached the end.
 #[allow(clippy::too_many_arguments)]
 fn song_grid(ui: &mut Ui, rows_ctx: &Rows, liked: &HashSet<String>, acts: &mut Vec<Action>, id: &str, title: &str, strap: Option<&str>, tracks: &[Track], rows: usize) -> bool {
     let (l, r) = shelf_header(ui, title, strap, None, true);
     let nudge = r as i32 - l as i32;
-    let col_w = feed_tile(ui, false);
+    let col_w = song_column(feed_tile(ui, false), ui.available_width(), crate::platform::phone());
     let mut picked = None;
     let (_, reached_end) = h_scroll(ui, id, nudge, tracks.len().div_ceil(rows.max(1)), col_w, 20.0, |ui| {
         ui.spacing_mut().item_spacing.x = 20.0;
@@ -1590,12 +1596,21 @@ fn settings_body(app: &mut App, ui: &mut Ui) {
     settings_lyrics(app, ui);
     settings_artists(app, ui);
     settings_appearance(app, ui);
-    settings_window(app, ui);
+    // A phone has no window to arrange, no proxy of its own to set (its VPN and Wi-Fi
+    // settings do that for every app) and no keyboard to bind.
+    let desk = !crate::platform::phone();
+    if desk {
+        settings_window(app, ui);
+    }
     settings_connections(app, ui);
-    section_label(ui, "Network", None);
-    settings_card(ui, |ui| network(app, ui));
+    if desk {
+        section_label(ui, "Network", None);
+        settings_card(ui, |ui| network(app, ui));
+    }
     super::transfer::settings_section(app, ui);
-    settings_shortcuts(app, ui);
+    if desk {
+        settings_shortcuts(app, ui);
+    }
 }
 
 /// The box above Settings: what's typed in it leaves only the sections and rows that say
@@ -1641,7 +1656,8 @@ fn settings_account(app: &mut App, ui: &mut Ui) {
     settings_card(ui, |ui| {
         if app.logged_in {
             let name = app.account_name.clone().unwrap_or_else(|| "YouTube Music".to_owned());
-            setting_row(ui, &name, Some("Signed in with Google. Your home feed, library and likes come from this account. Saved encrypted in Windows Credential Manager."), |ui| {
+            let desc = format!("Signed in with Google. Your home feed, library and likes come from this account. {}", crate::platform::KEPT);
+            setting_row(ui, &name, Some(&desc), |ui| {
                 sign_out = pill(ui, "Sign out", Some(icon::LOG_OUT), false).clicked();
             });
             // Also with one, when the one in use isn't it (a brand channel since deleted).
@@ -1668,7 +1684,7 @@ fn settings_account(app: &mut App, ui: &mut Ui) {
     });
     if busy {
         ui.add_space(6.0);
-        ui.label(RichText::new("Finish signing in in the window that opened.").font(theme::regular(12.5)).color(theme::text_dim()));
+        ui.label(RichText::new(if crate::platform::phone() { "Finish signing in on the page that opened." } else { "Finish signing in in the window that opened." }).font(theme::regular(12.5)).color(theme::text_dim()));
     }
     if sign_in {
         app.start_sign_in(ui.ctx());
@@ -1744,10 +1760,18 @@ fn settings_playback(app: &mut App, ui: &mut Ui) {
             toggle(ui, &mut app.play_songs, "Play songs, not music videos");
         });
         divider(ui);
-        setting_row(ui, "Output device", Some("Where the music plays. A picked device that isn't connected leaves it to Windows' default until it's back."), |ui| {
-            output_device_picker(app, ui);
-        });
-        divider(ui);
+        // On a phone the system routes the sound: speaker, headphones or Bluetooth.
+        if !crate::platform::phone() {
+            let desc = if cfg!(windows) {
+                "Where the music plays. A picked device that isn't connected leaves it to Windows' default until it's back."
+            } else {
+                "Where the music plays. A picked device that isn't connected leaves it to the system's default until it's back."
+            };
+            setting_row(ui, "Output device", Some(desc), |ui| {
+                output_device_picker(app, ui);
+            });
+            divider(ui);
+        }
         setting_row(ui, "Spatial audio", Some("Makes stereo songs sound like they surround you, for headphones: a wider stage, a little room around it and the way your head shades each ear. Voices stay in the middle. Not head-tracked, and not Dolby Atmos (that plays as it is when a song has it)."), |ui| {
             if toggle(ui, &mut app.spatial, "Spatial audio").changed() {
                 app.set_crossfade();
@@ -2078,25 +2102,34 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
             }
         });
         divider(ui);
-        setting_row(ui, "Font", Some("For the whole app and the lyrics. Any font installed on this PC works, e.g. one made for your language."), |ui| {
-            if let Some(name) = font_picker(ui) {
-                theme::set_font_choice(&name);
-                app.chrome_applied = None;
-            }
-        });
-        divider(ui);
-        let hidden = app.hidden_playlists.len();
-        let desc = match hidden {
-            0 => "Nothing hidden. Right-click a playlist in the sidebar to hide it from there.".to_owned(),
-            1 => "1 playlist is hidden from the sidebar. Right-click a playlist there to hide or show it.".to_owned(),
-            n => format!("{} playlists are hidden from the sidebar. Right-click a playlist there to hide or show it.", thousands(n as u64)),
-        };
-        setting_row(ui, "Hidden playlists", Some(&desc), |ui| {
-            if hidden > 0 && pill(ui, "Show all", None, false).clicked() {
-                app.hidden_playlists.clear();
-            }
-        });
-        divider(ui);
+        // A phone draws in its system font, as its other apps do, and has no sidebar to
+        // hide playlists from.
+        if !crate::platform::phone() {
+            let desc = if cfg!(windows) {
+                "For the whole app and the lyrics. Any font installed on this PC works, e.g. one made for your language."
+            } else {
+                "For the whole app and the lyrics. Any font installed on this computer works, e.g. one made for your language."
+            };
+            setting_row(ui, "Font", Some(desc), |ui| {
+                if let Some(name) = font_picker(ui) {
+                    theme::set_font_choice(&name);
+                    app.chrome_applied = None;
+                }
+            });
+            divider(ui);
+            let hidden = app.hidden_playlists.len();
+            let desc = match hidden {
+                0 => "Nothing hidden. Right-click a playlist in the sidebar to hide it from there.".to_owned(),
+                1 => "1 playlist is hidden from the sidebar. Right-click a playlist there to hide or show it.".to_owned(),
+                n => format!("{} playlists are hidden from the sidebar. Right-click a playlist there to hide or show it.", thousands(n as u64)),
+            };
+            setting_row(ui, "Hidden playlists", Some(&desc), |ui| {
+                if hidden > 0 && pill(ui, "Show all", None, false).clicked() {
+                    app.hidden_playlists.clear();
+                }
+            });
+            divider(ui);
+        }
         setting_row(ui, "Stats for nerds", Some("Show the codec, sample rate and bitrate of what's playing at the foot of the cover in Now Playing, whatever the source."), |ui| {
             toggle(ui, &mut app.show_nerd_stats, "Stats for nerds");
         });
@@ -2149,11 +2182,15 @@ fn settings_connections(app: &mut App, ui: &mut Ui) {
     let mut discord_enabled = app.discord_enabled;
     let prefs_before = app.discord_prefs.clone();
     section_label(ui, "Connections", None);
+    // Discord's card is drawn by the desktop Discord app, which a phone doesn't run.
+    let phone = crate::platform::phone();
     settings_card(ui, |ui| {
-        setting_row(ui, "Discord", Some("Show what you're playing on your Discord profile."), |ui| {
-            toggle(ui, &mut discord_enabled, "Discord");
-        });
-        divider(ui);
+        if !phone {
+            setting_row(ui, "Discord", Some("Show what you're playing on your Discord profile."), |ui| {
+                toggle(ui, &mut discord_enabled, "Discord");
+            });
+            divider(ui);
+        }
         let busy = app.lastfm_busy.load(Ordering::Relaxed);
         let desc = match &app.lastfm_user {
             Some(name) => format!("Scrobbling what you play to {name}'s profile."),
@@ -2179,6 +2216,9 @@ fn settings_connections(app: &mut App, ui: &mut Ui) {
     });
     if discord_enabled != app.discord_enabled {
         app.set_discord_enabled(discord_enabled);
+    }
+    if phone {
+        return;
     }
     // The card's wording, as the desktop app's Discord settings: a few switches, then
     // the activity and its name behind "Customize the card".
@@ -2353,10 +2393,10 @@ fn network(app: &mut App, ui: &mut Ui) {
         Setting::System => {
             divider(ui);
             let desc = match proxy::system() {
-                Some(p) => format!("Windows is set to use {}.", proxy::redact(&p)),
-                None => "Windows isn't set to use a proxy, so BitChord connects directly.".to_owned(),
+                Some(p) => format!("{SYSTEM} is set to use {}.", proxy::redact(&p)),
+                None => format!("{SYSTEM} isn't set to use a proxy, so BitChord connects directly."),
             };
-            setting_row(ui, "Windows proxy", Some(&desc), |_| {});
+            setting_row(ui, if cfg!(windows) { "Windows proxy" } else { "System proxy" }, Some(&desc), |_| {});
         }
         Setting::Custom(_) => {
             divider(ui);
@@ -2369,7 +2409,7 @@ fn network(app: &mut App, ui: &mut Ui) {
             ui.horizontal(|ui| {
                 save = pill(ui, if saved { "Saved" } else { "Save" }, None, !saved).clicked() && !saved;
                 ui.add_space(8.0);
-                ui.label(RichText::new("A password in the address is kept in Windows Credential Manager.").font(theme::regular(12.5)).color(theme::text_dim()));
+                ui.label(RichText::new(if cfg!(windows) { "A password in the address is kept in Windows Credential Manager." } else { "A password in the address is kept in your system's keychain." }).font(theme::regular(12.5)).color(theme::text_dim()));
             });
             if save {
                 match proxy::save(app.backend.data_dir(), &custom) {
@@ -2464,7 +2504,7 @@ fn font_picker(ui: &mut Ui) -> Option<String> {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.add_space(12.0);
-                ui.label(RichText::new("Installed on this PC").font(theme::semibold(12.0)).color(theme::text_faint()));
+                ui.label(RichText::new(if cfg!(windows) { "Installed on this PC" } else { "Installed on this computer" }).font(theme::semibold(12.0)).color(theme::text_faint()));
             });
             ui.add_space(4.0);
             let ctx = ui.ctx().clone();
@@ -2487,7 +2527,9 @@ fn font_picker(ui: &mut Ui) -> Option<String> {
     picked.filter(|p| *p != current)
 }
 
-const SYSTEM_DEFAULT: &str = "Windows default";
+const SYSTEM_DEFAULT: &str = if cfg!(windows) { "Windows default" } else { "System default" };
+/// What the settings call the system when they speak of its own setup.
+const SYSTEM: &str = if cfg!(windows) { "Windows" } else { "The system" };
 
 fn output_device_picker(app: &mut App, ui: &mut Ui) {
     let current = match &app.output_device {
@@ -2617,35 +2659,82 @@ pub(super) fn settings_card(ui: &mut Ui, body: impl FnOnce(&mut Ui)) {
         });
 }
 
-/// A settings row: title and description on the left, the control on the right.
+/// Where a phone's settings row puts its control.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Slot {
+    /// Under the text, on a line of its own: a dropdown, a button, a slider.
+    Below,
+    /// At the right of the text, as phone settings put a switch.
+    Beside,
+    /// The row is a note and has no control.
+    Absent,
+}
+
+/// The widest control a phone row keeps beside its text: a switch, a spinner.
+const BESIDE_MAX: f32 = 64.0;
+
+/// The slot for a control that came out `width` wide the last time it was drawn; one
+/// not drawn yet goes below, where anything fits.
+fn phone_slot(width: Option<f32>) -> Slot {
+    match width {
+        None => Slot::Below,
+        Some(w) if w < 1.0 => Slot::Absent,
+        Some(w) if w <= BESIDE_MAX => Slot::Beside,
+        Some(_) => Slot::Below,
+    }
+}
+
+/// A settings row: title and description on the left, the control on the right. A phone
+/// is too narrow for most controls beside the text: there only a switch stays at the
+/// right, and the others go underneath, in a line tall enough for a thumb.
 pub(super) fn setting_row(ui: &mut Ui, title: &str, desc: Option<&str>, control: impl FnOnce(&mut Ui)) {
     if !settings_row_shown(ui, title, desc.unwrap_or("")) {
         return;
     }
     let w = ui.available_width();
-    // A phone is too narrow for the control beside the text: it goes underneath, in a
-    // row tall enough for a thumb.
-    let stacked = crate::platform::phone();
-    let text_w = if stacked { w } else { (w - 230.0).max(200.0) };
+    // How wide this row's control was last frame decides where it goes in this one.
+    let width_id = ui.make_persistent_id(egui::IdSalt::new(("setting-row-control", title)));
+    let slot = crate::platform::phone().then(|| phone_slot(ui.data(|d| d.get_temp::<f32>(width_id))));
+    let text_w = match slot {
+        None => (w - 230.0).max(200.0),
+        Some(Slot::Beside) => w - BESIDE_MAX - 12.0,
+        Some(_) => w,
+    };
     let title_g = widgets::galley(ui, title, theme::semibold(14.5), theme::text(), text_w);
-    let desc_g = desc.map(|d| widgets::galley_wrapped(ui, d, theme::regular(12.5), theme::text_dim(), text_w, 3));
+    // A phone's narrow column needs more lines to say the same thing.
+    let lines = if slot.is_some() { 8 } else { 3 };
+    let desc_g = desc.map(|d| widgets::galley_wrapped(ui, d, theme::regular(12.5), theme::text_dim(), text_w, lines));
     let text_h = title_g.size().y + desc_g.as_ref().map_or(0.0, |g| g.size().y + 3.0);
-    let ctl_h = if stacked { 48.0 } else { 0.0 };
-    let h = if stacked { text_h + 20.0 + ctl_h } else { (text_h + 26.0).max(58.0) };
+    let below = slot == Some(Slot::Below);
+    let ctl_h = if below { 48.0 } else { 0.0 };
+    let h = match slot {
+        Some(Slot::Below) => text_h + 20.0 + ctl_h,
+        Some(Slot::Absent) => text_h + 26.0,
+        _ => (text_h + 26.0).max(58.0),
+    };
     let (rect, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
     let fade = if ui.is_enabled() { 1.0 } else { 0.45 };
-    let top = if stacked { rect.top() + 10.0 } else { rect.center().y - text_h / 2.0 };
+    let top = if below { rect.top() + 10.0 } else { rect.center().y - text_h / 2.0 };
     ui.painter().galley(pos2(rect.left(), top), title_g.clone(), theme::with_alpha(theme::text(), fade));
     if let Some(g) = desc_g {
         ui.painter().galley(pos2(rect.left(), top + title_g.size().y + 3.0), g, theme::with_alpha(theme::text_dim(), fade));
     }
-    let (ctl, layout) = if stacked {
+    let (ctl, layout) = if below {
         (Rect::from_min_max(pos2(rect.left(), rect.bottom() - ctl_h), rect.max), egui::Layout::left_to_right(egui::Align::Center))
     } else {
-        (Rect::from_min_max(pos2(rect.left() + text_w + 20.0, rect.top()), rect.max), egui::Layout::right_to_left(egui::Align::Center))
+        (Rect::from_min_max(pos2(rect.left() + text_w + if slot.is_some() { 12.0 } else { 20.0 }, rect.top()), rect.max), egui::Layout::right_to_left(egui::Align::Center))
     };
     let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(ctl).layout(layout));
     control(&mut cui);
+    if let Some(slot) = slot {
+        // A control in another slot than its width asks for (the first frame, or a
+        // button that became a spinner): this frame is drawn again with it moved.
+        let width = cui.min_rect().width();
+        ui.data_mut(|d| d.insert_temp(width_id, width));
+        if phone_slot(Some(width)) != slot {
+            ui.ctx().request_discard("a settings row's control changed slot");
+        }
+    }
 }
 
 /// A settings row that opens a section of its own: the same text as `setting_row`, but
@@ -2753,3 +2842,41 @@ fn keycap(ui: &Ui, right: egui::Pos2, key: &str) -> f32 {
     rect.left()
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_phone_gives_a_song_column_nearly_the_whole_screen() {
+        assert_eq!(song_column(270.0, 380.0, true), 344.0);
+        // Never wider than a screen narrower than a tile.
+        assert_eq!(song_column(270.0, 250.0, true), 250.0);
+    }
+
+    #[test]
+    fn a_desktop_keeps_the_feed_tile_width() {
+        assert_eq!(song_column(270.0, 1400.0, false), 270.0);
+    }
+
+    #[test]
+    fn a_switch_sits_beside_its_text_on_a_phone() {
+        assert_eq!(phone_slot(Some(44.0)), Slot::Beside);
+    }
+
+    #[test]
+    fn a_dropdown_or_a_button_goes_under_the_text() {
+        assert_eq!(phone_slot(Some(160.0)), Slot::Below);
+        assert_eq!(phone_slot(Some(98.0)), Slot::Below);
+    }
+
+    #[test]
+    fn a_note_without_a_control_keeps_no_room_for_one() {
+        assert_eq!(phone_slot(Some(0.0)), Slot::Absent);
+    }
+
+    #[test]
+    fn a_control_not_drawn_yet_goes_where_anything_fits() {
+        assert_eq!(phone_slot(None), Slot::Below);
+    }
+}

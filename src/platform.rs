@@ -12,6 +12,28 @@ pub const HAS_SAF: bool = cfg!(target_os = "android");
 /// A system dialog to pick a folder or files with.
 pub const HAS_FILE_DIALOG: bool = cfg!(not(target_os = "android"));
 
+/// How Settings says where a sign-in is kept on this system.
+pub const KEPT: &str = if cfg!(windows) {
+    "Saved encrypted in Windows Credential Manager."
+} else if cfg!(target_os = "macos") {
+    "Saved in your Mac's Keychain."
+} else if cfg!(target_os = "android") {
+    "Saved in the app's own storage on this phone."
+} else {
+    "Saved in your system's keyring."
+};
+
+/// Open a web page in the phone's browser, through the activity.
+#[cfg(target_os = "android")]
+pub fn open_url(url: &str) {
+    let url = url.to_owned();
+    std::thread::spawn(move || {
+        if let Err(e) = call("open-url", &url, std::time::Duration::from_secs(10)) {
+            log::warn!("couldn't open the browser: {e}");
+        }
+    });
+}
+
 /// Phone layout: bottom navigation and a mini player instead of the desktop frame.
 /// Always on Android; elsewhere `YTM_PHONE=1` forces it, to see and test it on a desktop
 /// (with `YTM_SIZE=412,900`).
@@ -111,18 +133,61 @@ pub fn take_back_request() -> bool {
     BACK_REQUESTED.swap(false, Ordering::SeqCst)
 }
 
-type TextSource = Box<dyn Fn() -> Option<String> + Send + Sync>;
-static TEXT_SOURCE: std::sync::OnceLock<TextSource> = std::sync::OnceLock::new();
-
-/// Android: where the on-screen keyboard's text can be read from (winit 0.30 drops it,
-/// so the activity's crate registers a reader); called once.
-pub fn set_text_source(source: impl Fn() -> Option<String> + Send + Sync + 'static) {
-    let _ = TEXT_SOURCE.set(Box::new(source));
+/// What changed in the on-screen keyboard's text since it was last looked at: letters to
+/// take back from the end, then letters to add.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextEdit {
+    pub backspaces: usize,
+    pub insert: String,
 }
 
-/// The text typed on the on-screen keyboard since the last call, if any.
-pub fn take_typed_text() -> Option<String> {
-    TEXT_SOURCE.get().and_then(|source| source())
+/// The edit that turns `seen` into `now`: what they share at the start stays, the rest of
+/// `seen` is taken back and the rest of `now` typed. `None` when nothing changed.
+pub fn text_edit(seen: &str, now: &str) -> Option<TextEdit> {
+    if seen == now {
+        return None;
+    }
+    let shared = seen.chars().zip(now.chars()).take_while(|(a, b)| a == b).count();
+    Some(TextEdit { backspaces: seen.chars().count() - shared, insert: now.chars().skip(shared).collect() })
+}
+
+struct Keyboard {
+    /// The whole text the keyboard holds for the field being typed in.
+    text: Box<dyn Fn() -> String + Send + Sync>,
+    /// Empty it (the field was left).
+    clear: Box<dyn Fn() + Send + Sync>,
+}
+
+static KEYBOARD: std::sync::OnceLock<Keyboard> = std::sync::OnceLock::new();
+/// The keyboard's text as of the last look.
+static KEYBOARD_SEEN: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// Android: how to read and empty the on-screen keyboard's text (winit 0.30 drops what it
+/// types, so the activity's crate registers these); called once.
+pub fn set_keyboard(text: impl Fn() -> String + Send + Sync + 'static, clear: impl Fn() + Send + Sync + 'static) {
+    let _ = KEYBOARD.set(Keyboard { text: Box::new(text), clear: Box::new(clear) });
+}
+
+/// What was typed, deleted or corrected on the on-screen keyboard since the last call.
+/// The keyboard's text is only read here, never emptied, so a letter typed between two
+/// calls can't fall through.
+pub fn take_text_edit() -> Option<TextEdit> {
+    let keyboard = KEYBOARD.get()?;
+    let now = (keyboard.text)();
+    let mut seen = KEYBOARD_SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    let edit = text_edit(&seen, &now)?;
+    *seen = now;
+    Some(edit)
+}
+
+/// The text field was left: the keyboard starts over for the next one.
+pub fn reset_keyboard() {
+    let Some(keyboard) = KEYBOARD.get() else { return };
+    let mut seen = KEYBOARD_SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if !seen.is_empty() || !(keyboard.text)().is_empty() {
+        (keyboard.clear)();
+        seen.clear();
+    }
 }
 
 static ENTER_PRESSED: AtomicBool = AtomicBool::new(false);
@@ -445,13 +510,59 @@ mod tests {
         assert!(phone_from(true, None));
     }
 
+    fn edit(seen: &str, now: &str) -> Option<(usize, String)> {
+        text_edit(seen, now).map(|e| (e.backspaces, e.insert))
+    }
+
     #[test]
-    fn text_from_the_keyboard_comes_from_the_registered_source() {
-        assert_eq!(take_typed_text(), None, "no source yet");
-        let said = std::sync::atomic::AtomicBool::new(false);
-        set_text_source(move || (!said.swap(true, Ordering::SeqCst)).then(|| "lo".to_owned()));
-        assert_eq!(take_typed_text().as_deref(), Some("lo"));
-        assert_eq!(take_typed_text(), None, "taken once");
+    fn typing_adds_what_came_after_the_text_already_seen() {
+        assert_eq!(edit("", "y"), Some((0, "y".into())));
+        assert_eq!(edit("yo", "yoasobi"), Some((0, "asobi".into())), "several letters between two looks are all there");
+        assert_eq!(edit("yoasobi", "yoasobi tabun"), Some((0, " tabun".into())));
+    }
+
+    #[test]
+    fn nothing_new_is_no_edit() {
+        assert_eq!(edit("", ""), None);
+        assert_eq!(edit("tabun", "tabun"), None);
+    }
+
+    #[test]
+    fn deleting_and_autocorrect_take_back_what_was_typed() {
+        assert_eq!(edit("abc", "ab"), Some((1, String::new())));
+        assert_eq!(edit("teh", "the"), Some((2, "he".into())), "the keyboard corrected the word");
+        assert_eq!(edit("abc", ""), Some((3, String::new())));
+    }
+
+    #[test]
+    fn edits_count_letters_not_bytes() {
+        assert_eq!(edit("たぶ", "たぶん"), Some((0, "ん".into())));
+        assert_eq!(edit("日本語", "日本"), Some((1, String::new())));
+        assert_eq!(edit("にほん", "日本"), Some((3, "日本".into())), "kana turned into kanji");
+    }
+
+    #[test]
+    fn the_keyboards_text_is_followed_without_losing_a_letter() {
+        let text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let (t, c) = (text.clone(), text.clone());
+        set_keyboard(move || t.lock().unwrap().clone(), move || c.lock().unwrap().clear());
+        assert!(take_text_edit().is_none(), "nothing typed yet");
+        let mut field = String::new();
+        // Letters arrive at any pace; the field is looked at now and then.
+        for (typed, looks) in [("yo", true), ("yoas", false), ("yoasobi", true), ("yoasobi tabun", true)] {
+            *text.lock().unwrap() = typed.to_owned();
+            if looks && let Some(e) = take_text_edit() {
+                for _ in 0..e.backspaces {
+                    field.pop();
+                }
+                field.push_str(&e.insert);
+            }
+        }
+        assert_eq!(field, "yoasobi tabun");
+        // Leaving the field starts the keyboard's text over.
+        reset_keyboard();
+        assert_eq!(*text.lock().unwrap(), "");
+        assert!(take_text_edit().is_none());
     }
 
     #[test]

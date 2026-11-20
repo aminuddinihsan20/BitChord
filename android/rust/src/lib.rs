@@ -52,17 +52,13 @@ fn android_main(app: AndroidApp) {
     // The keyboard's action key (✓) arrives as an editor action, which winit 0.30 drops
     // too; "no action" makes it an Enter key, which the text fields take as "submit".
     app.set_ime_editor_info(InputType::TYPE_CLASS_TEXT, TextInputAction::None, ImeOptions::empty());
-    // winit 0.30 drops what the on-screen keyboard types: read it from the input method
-    // state and clear that, so each poll sees only what was typed since the last.
-    let ime = app.clone();
-    bitchord::platform::set_text_source(move || {
-        let state = ime.text_input_state();
-        if state.text.is_empty() {
-            return None;
-        }
-        ime.set_text_input_state(TextInputState { text: String::new(), selection: TextSpan { start: 0, end: 0 }, compose_region: None });
-        Some(state.text)
-    });
+    // winit 0.30 drops what the on-screen keyboard types: the app reads the input
+    // method's text and follows its changes (see `platform::take_text_edit`).
+    let (reader, clearer) = (app.clone(), app.clone());
+    bitchord::platform::set_keyboard(
+        move || reader.text_input_state().text,
+        move || clearer.set_text_input_state(TextInputState { text: String::new(), selection: TextSpan { start: 0, end: 0 }, compose_region: None }),
+    );
     match bitchord::run_with(move |options| options.android_app = Some(app)) {
         Ok(()) => log::info!("closed"),
         Err(e) => log::error!("bitchord stopped: {e}"),

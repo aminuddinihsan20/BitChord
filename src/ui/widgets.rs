@@ -1027,6 +1027,12 @@ fn nearest_page(starts: &[usize], step: f32, offset: f32) -> f32 {
     starts.iter().map(|&s| s as f32 * step).min_by(|a, b| (a - offset).abs().total_cmp(&(b - offset).abs())).unwrap_or(0.0)
 }
 
+/// Where a shelf lying between two pages should settle; `None` when it is on one.
+fn shelf_rest(starts: &[usize], step: f32, offset: f32) -> Option<f32> {
+    let page = nearest_page(starts, step, offset);
+    ((page - offset).abs() > 0.5).then_some(page)
+}
+
 /// A colour for `seed` (0..1 around the colour wheel): the same every time, and spread out
 /// so folders named alike still look different.
 pub fn hue_of(seed: &str) -> f32 {
@@ -1239,6 +1245,15 @@ fn follow_horizontal_swipe(ctx: &egui::Context, touch: Touch, offset: f32, pages
                     ctx.data_mut(|data| data.insert_temp(target_id, to));
                     ctx.request_repaint();
                 }
+            } else if ctx.data(|data| data.get_temp::<f32>(target_id)).is_none()
+                && let Some(page) = shelf_rest(pages.starts, pages.step, offset).filter(|p| *p <= pages.max + 0.5)
+            {
+                // Left between two pages (a position saved before its columns changed
+                // width, a glide cut short): it settles on the nearer one. A page the
+                // content doesn't reach yet is not a place to glide to.
+                ctx.animate_value_with_time(anim_id, offset, 0.0);
+                ctx.data_mut(|data| data.insert_temp(target_id, page));
+                ctx.request_repaint();
             }
         }
     }
@@ -1387,7 +1402,7 @@ mod folder_art_tests {
 
 #[cfg(test)]
 mod shelf_scroll_tests {
-    use super::{drag_axis, h_scroll_on, nearest_page, shelf_page_starts, shelf_page_target, swipe_direction};
+    use super::{drag_axis, h_scroll_on, nearest_page, shelf_page_starts, shelf_page_target, shelf_rest, swipe_direction};
     use egui::{Pos2, Rect, Sense, pos2, vec2};
 
     #[test]
@@ -1402,6 +1417,21 @@ mod shelf_scroll_tests {
         assert_eq!(swipe_direction(-15.0, -900.0), 1, "a quick flick left");
         assert_eq!(swipe_direction(120.0, 0.0), -1, "right: the previous page");
         assert_eq!(swipe_direction(10.0, 1500.0), -1, "a quick flick right");
+    }
+
+    #[test]
+    fn a_shelf_left_between_two_pages_settles_on_the_nearer() {
+        let pages = [0, 1, 2, 3];
+        // Restored from before an update made its columns wider, or stopped mid-glide.
+        assert_eq!(shelf_rest(&pages, 364.0, 223.0), Some(364.0));
+        assert_eq!(shelf_rest(&pages, 364.0, 120.0), Some(0.0));
+    }
+
+    #[test]
+    fn a_shelf_on_a_page_stays_put() {
+        let pages = [0, 1, 2, 3];
+        assert_eq!(shelf_rest(&pages, 364.0, 0.0), None);
+        assert_eq!(shelf_rest(&pages, 364.0, 728.2), None);
     }
 
     #[test]

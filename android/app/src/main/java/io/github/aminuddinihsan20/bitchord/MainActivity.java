@@ -73,10 +73,15 @@ public class MainActivity extends GameActivity {
         main.post(new Runnable() {
             @Override
             public void run() {
-                String playing = nativeNowPlaying();
-                boolean media = playing != null && !playing.isEmpty();
-                // Started once per stretch of music; tried again if Android refused it.
-                hadMedia = media && (hadMedia || startPlaybackService());
+                String now = nativeNowPlaying();
+                boolean loaded = now != null && !now.isEmpty();
+                // Fields are joined by U+001F; the fourth says whether it plays.
+                String[] fields = loaded ? now.split("\u001f", -1) : new String[0];
+                boolean playing = fields.length > 3 && "1".equals(fields[3]);
+                // The player (notification and all) starts with the first song that plays,
+                // not with last time's song restored paused, and stays while one is loaded.
+                // Tried again if Android refused it.
+                hadMedia = loaded && (hadMedia || (playing && startPlaybackService()));
                 String call = nativeTakeCall();
                 if (call != null && !call.isEmpty()) {
                     handleCall(call);
@@ -121,6 +126,22 @@ public class MainActivity extends GameActivity {
                 startActivityForResult(pick, REQUEST_FOLDER);
                 break;
             }
+            case "turnstile":
+                Turnstile.run(this, done);
+                break;
+            case "open-url":
+                // Web pages only: nothing the app hands over may start another kind of app.
+                if (!arg.startsWith("https://") && !arg.startsWith("http://")) {
+                    done.finish(false, "not a web address");
+                    break;
+                }
+                try {
+                    startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(arg)));
+                    done.finish(true, "");
+                } catch (RuntimeException e) {
+                    done.finish(false, "no browser to open it with");
+                }
+                break;
             case "scan":
                 Storage.scan(this, arg, done);
                 break;

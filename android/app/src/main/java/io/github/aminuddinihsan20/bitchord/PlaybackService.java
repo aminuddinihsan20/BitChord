@@ -61,6 +61,11 @@ public class PlaybackService extends Service {
     private boolean noisyRegistered;
 
     private String lastLine = "";
+    /** How far the position may drift from the system's own count before it is told again. */
+    private static final long SEEK_SLACK_MS = 1500;
+    private boolean published;
+    private long publishedPosition;
+    private long publishedAt;
     private String title = "", artist = "", coverUrl = "";
     private boolean playing;
     private long duration, position;
@@ -172,6 +177,16 @@ public class PlaybackService extends Service {
         }
         boolean wasPlaying = playing;
         String newCover = f[2];
+        // The position moves on by itself while a song plays, and the system counts it
+        // on from the last one it was told: only a change it can't work out is published.
+        long now = android.os.SystemClock.elapsedRealtime();
+        long expected = publishedPosition + (wasPlaying ? now - publishedAt : 0);
+        boolean same = f[0].equals(title) && f[1].equals(artist) && newCover.equals(coverUrl)
+                && "1".equals(f[3]) == playing && parse(f[4]) == duration
+                && Math.abs(parse(f[5]) - expected) < SEEK_SLACK_MS;
+        if (same && published) {
+            return;
+        }
         title = f[0];
         artist = f[1];
         playing = "1".equals(f[3]);
@@ -206,6 +221,9 @@ public class PlaybackService extends Service {
     }
 
     private void publish() {
+        published = true;
+        publishedPosition = position;
+        publishedAt = android.os.SystemClock.elapsedRealtime();
         session.setMetadata(new MediaMetadata.Builder()
                 .putString(MediaMetadata.METADATA_KEY_TITLE, title)
                 .putString(MediaMetadata.METADATA_KEY_ARTIST, artist)

@@ -234,7 +234,9 @@ fn open_browser(url: &str) {
     }
     #[cfg(target_os = "macos")]
     let _ = std::process::Command::new("open").arg(url).spawn();
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(target_os = "android")]
+    crate::platform::open_url(url);
+    #[cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))]
     let _ = std::process::Command::new("xdg-open").arg(url).spawn();
 }
 

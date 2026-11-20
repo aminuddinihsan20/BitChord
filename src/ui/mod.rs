@@ -653,7 +653,8 @@ impl App {
             crate::transfer::Transfer::new(backend.data_dir(), Arc::new(move || b.wake()))
         };
         let discord_prefs = crate::discord::Prefs::load(&get);
-        let discord = discord_enabled.then(crate::discord::Discord::spawn).flatten();
+        // Discord's card is the desktop Discord app's; a phone has none to talk to.
+        let discord = (discord_enabled && !cfg!(target_os = "android")).then(crate::discord::Discord::spawn).flatten();
         if let Some(d) = &discord {
             d.set_prefs(discord_prefs.clone());
         }
@@ -1543,16 +1544,24 @@ impl eframe::App for App {
         // The phone's keyboard text, which winit doesn't pass on (see `platform`). While a
         // text field has the focus the UI polls for it: nothing else wakes an idle frame.
         if crate::platform::phone() {
-            if let Some(typed) = crate::platform::take_typed_text() {
-                raw.events.push(egui::Event::Text(typed));
+            let key = |key, pressed| egui::Event::Key { key, physical_key: Some(key), pressed, repeat: false, modifiers: egui::Modifiers::NONE };
+            if let Some(edit) = crate::platform::take_text_edit() {
+                // Deleted or corrected letters first, then what was typed.
+                for _ in 0..edit.backspaces {
+                    raw.events.extend([key(egui::Key::Backspace, true), key(egui::Key::Backspace, false)]);
+                }
+                if !edit.insert.is_empty() {
+                    raw.events.push(egui::Event::Text(edit.insert));
+                }
             }
             if crate::platform::take_enter() {
-                for pressed in [true, false] {
-                    raw.events.push(egui::Event::Key { key: egui::Key::Enter, physical_key: Some(egui::Key::Enter), pressed, repeat: false, modifiers: egui::Modifiers::NONE });
-                }
+                raw.events.extend([key(egui::Key::Enter, true), key(egui::Key::Enter, false)]);
             }
             if ctx.egui_wants_keyboard_input() {
                 ctx.request_repaint_after(Duration::from_millis(60));
+            } else {
+                // No field has the focus: the keyboard's text starts over for the next.
+                crate::platform::reset_keyboard();
             }
         }
         if let Some((x, y)) = dev_var("YTM_FAKE_POINTER").and_then(|v| {
