@@ -75,10 +75,8 @@ public class MainActivity extends GameActivity {
             public void run() {
                 String playing = nativeNowPlaying();
                 boolean media = playing != null && !playing.isEmpty();
-                if (media && !hadMedia) {
-                    startPlaybackService();
-                }
-                hadMedia = media;
+                // Started once per stretch of music; tried again if Android refused it.
+                hadMedia = media && (hadMedia || startPlaybackService());
                 String call = nativeTakeCall();
                 if (call != null && !call.isEmpty()) {
                     handleCall(call);
@@ -182,12 +180,48 @@ public class MainActivity extends GameActivity {
         super.onStop();
     }
 
+    /**
+     * The activity is going away for good (swiped out of the recent apps, or finished). The
+     * Rust app can't outlive it: GameActivity's onDestroy waits for the app's thread to
+     * return, which it never does, so the main thread would hang ("isn't responding" at the
+     * next launch) with the music service keeping the process alive. End the music and the
+     * process instead; the next launch starts fresh.
+     */
+    @Override
+    protected void onDestroy() {
+        endProcess(this);
+    }
+
+    /** Stop the music service and end the process. Never returns. */
+    static void endProcess(android.content.Context context) {
+        try {
+            context.stopService(new Intent(context, PlaybackService.class));
+        } catch (RuntimeException ignored) {
+            // Already gone.
+        }
+        // The app saves its settings when the activity stops, just before this: let it finish.
+        try {
+            Thread.sleep(250);
+        } catch (InterruptedException ignored) {
+            // Ending anyway.
+        }
+        android.os.Process.killProcess(android.os.Process.myPid());
+        System.exit(0);
+    }
+
     /** The first song: ask once for notifications (Android 13+), then show the player. */
-    private void startPlaybackService() {
+    private boolean startPlaybackService() {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 1);
         }
-        startForegroundService(new Intent(this, PlaybackService.class));
+        try {
+            startForegroundService(new Intent(this, PlaybackService.class));
+            return true;
+        } catch (IllegalStateException e) {
+            // Android doesn't let a service start from the background: it is tried again
+            // at the next poll, and works once the app is on screen.
+            return false;
+        }
     }
 
     // winit reports Enter as the character '\n', which the app's text fields ignore: hand

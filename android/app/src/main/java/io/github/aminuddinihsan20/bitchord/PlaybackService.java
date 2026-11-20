@@ -316,6 +316,14 @@ public class PlaybackService extends Service {
         super.onDestroy();
     }
 
+    /** The app was swiped out of the recent apps: the music stops with it. */
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        stopForeground(STOP_FOREGROUND_REMOVE);
+        stopSelf();
+        MainActivity.endProcess(this);
+    }
+
     @Override
     public IBinder onBind(Intent intent) {
         return null;
