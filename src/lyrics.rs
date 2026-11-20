@@ -272,6 +272,7 @@ impl Client {
             Ok(s) => sources.extend(s),
             Err(e) => log::info!("lrc.red: {e:#}"),
         }
+        log::info!("lyrics: {} source(s) for {}", sources.len(), q.video_id);
         if sources.is_empty() {
             return Ok(LyricsSet::default());
         }
