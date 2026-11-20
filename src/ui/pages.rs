@@ -397,8 +397,47 @@ fn selection_bar(app: &mut App, ctx: &egui::Context, page: &Page, area: Rect) {
 
 // ------------------------------------------------------------------ home
 
+/// Phone: a newer version on the releases page, offered above the feed. A tap hands its
+/// APK to the browser, which downloads it; opening the download installs it over this one.
+fn update_card(app: &mut App, ui: &mut Ui) {
+    let offer = match super::dev_var("YTM_FAKE_UPDATE") {
+        Some(v) => Some((v.to_owned(), crate::update::RELEASES.to_owned())),
+        None => app.updater.as_ref().and_then(|u| match u.state() {
+            crate::update::State::Available { version, url } => Some((version, url)),
+            _ => None,
+        }),
+    };
+    let Some((version, url)) = offer.filter(|(v, _)| app.update_dismissed.as_deref() != Some(v.as_str())) else { return };
+    ui.add_space(12.0);
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 64.0), Sense::click());
+    let resp = named(resp, "Download the update");
+    ui.painter().rect_filled(rect, 16.0, theme::glass(0.10));
+    let accent = ui.ctx().data(|d| d.get_temp::<Color32>(egui::Id::unique("accent"))).unwrap_or(theme::RED);
+    widgets::icon_at(ui, pos2(rect.left() + 28.0, rect.center().y), icon::DOWNLOAD, 20.0, accent);
+    let x = rect.left() + 54.0;
+    let text_w = rect.right() - 48.0 - x;
+    widgets::text_at(ui, pos2(x, rect.center().y - 19.0), &format!("BitChord {version} is available"), theme::semibold(15.0), theme::text(), text_w);
+    widgets::text_at(ui, pos2(x, rect.center().y + 3.0), "Tap to download it, then open it to install.", theme::regular(12.5), theme::text_dim(), text_w);
+    // Its own, thumb-sized target over the card's right end.
+    let close = Rect::from_center_size(pos2(rect.right() - 26.0, rect.center().y), Vec2::splat(44.0));
+    let closed = named(ui.interact(close, resp.id.with("dismiss"), Sense::click()), "Not now");
+    widgets::icon_at(ui, close.center(), icon::X, 14.0, theme::text_dim());
+    if closed.clicked() {
+        app.update_dismissed = Some(version);
+    } else if resp.clicked() {
+        #[cfg(target_os = "android")]
+        crate::platform::open_url(&url);
+        #[cfg(not(target_os = "android"))]
+        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+    }
+    ui.add_space(12.0);
+}
+
 fn home(app: &mut App, ui: &mut Ui, now: f64) {
     page_title(ui, "Home");
+    if crate::platform::phone() {
+        update_card(app, ui);
+    }
     // The phone's navigation has no "New" tab: its page opens from here.
     if crate::platform::phone() && pill(ui, "New releases", Some(icon::CHEVRON_RIGHT), false).clicked() {
         app.actions.push(Action::Go(Page::New));

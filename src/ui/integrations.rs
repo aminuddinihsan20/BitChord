@@ -138,7 +138,7 @@ impl App {
         let Some(u) = self.updater.clone() else { return };
         let due = match self.update_checked {
             None => now > 8.0,
-            Some(t) => now - t > 6.0 * 3600.0 && !matches!(u.state(), State::Ready { .. }),
+            Some(t) => now - t > 6.0 * 3600.0 && !matches!(u.state(), State::Ready { .. } | State::Available { .. }),
         };
         let enabled = updatable() && dev_var("YTM_BACKGROUND").is_none_or(|_| dev_var("YTM_UPDATE_FORCE").is_some() || dev_var("YTM_UPDATE_FEED").is_some());
         if enabled && due {

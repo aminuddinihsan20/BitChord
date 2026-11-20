@@ -46,6 +46,9 @@ pub enum State {
     Downloading { version: String, percent: u8 },
     /// `installer` is the setup exe, or for the portable build the new bitchord.exe.
     Ready { version: String, installer: PathBuf },
+    /// Android: a newer release has an APK at `url`. The phone downloads and installs
+    /// it itself, with its owner's consent, so nothing is fetched here.
+    Available { version: String, url: String },
     Failed(String),
 }
 
@@ -98,6 +101,22 @@ fn asset_name(version: &str) -> String {
         (if cfg!(target_arch = "aarch64") { "-arm64" } else { "" }.to_owned(), "exe")
     };
     if portable { format!("bitchord-portable-{version}{suffix}.zip") } else { format!("bitchord-setup-{version}{suffix}.{setup}") }
+}
+
+/// What a phone is offered from the latest `release`: its version and its APK, when it
+/// is newer than `current` and has an APK (a release only builds the platforms that
+/// changed, so a desktop-only one has none). The name is the one release.yml gives it.
+fn apk_offer(release: &serde_json::Value, current: &str) -> Option<(String, String)> {
+    let tag = release["tag_name"].as_str()?;
+    if !newer(tag, current) {
+        return None;
+    }
+    let version = tag.trim_start_matches('v');
+    let want = format!("bitchord-{version}-android-arm64.apk");
+    let asset = release["assets"].as_array()?.iter().find(|a| a["name"] == want.as_str())?;
+    // Only a download from GitHub over HTTPS is handed to the browser.
+    let url = asset["browser_download_url"].as_str().filter(|u| u.starts_with("https://"))?;
+    Some((version.to_owned(), url.to_owned()))
 }
 
 /// The portable build's folder: the download ships a `portable.txt` beside the exe
@@ -257,6 +276,18 @@ impl Updater {
             self.notes.lock().unwrap().insert(tag.trim_start_matches('v').to_owned(), Some(body.to_owned()));
         }
         let current = current_version();
+        if cfg!(target_os = "android") {
+            return Ok(match apk_offer(&release, &current) {
+                Some((version, url)) => {
+                    log::info!("update: {version} is available");
+                    State::Available { version, url }
+                }
+                None => {
+                    log::info!("update: {current} is current (latest {tag})");
+                    State::UpToDate
+                }
+            });
+        }
         if !newer(tag, &current) {
             log::info!("update: {current} is current (latest {tag})");
             return Ok(State::UpToDate);
@@ -527,6 +558,31 @@ mod tests {
     #[test]
     fn release_feed_is_this_repo() {
         assert_eq!(LATEST, "https://api.github.com/repos/aminuddinihsan20/BitChord-PC-Official/releases/latest");
+    }
+
+    fn release(tag: &str, assets: &[&str]) -> serde_json::Value {
+        let assets: Vec<_> = assets.iter().map(|n| serde_json::json!({ "name": n, "browser_download_url": format!("https://example.test/{n}") })).collect();
+        serde_json::json!({ "tag_name": tag, "assets": assets })
+    }
+
+    #[test]
+    fn a_phone_is_offered_the_apk_of_a_newer_release() {
+        let r = release("v2.1.2", &["bitchord-setup-2.1.2-macos-aarch64.dmg", "bitchord-2.1.2-android-arm64.apk"]);
+        assert_eq!(apk_offer(&r, "2.1.1"), Some(("2.1.2".to_owned(), "https://example.test/bitchord-2.1.2-android-arm64.apk".to_owned())));
+    }
+
+    #[test]
+    fn a_release_without_an_apk_offers_a_phone_nothing() {
+        // Only the platforms that changed are built: a desktop-only release has no APK.
+        let r = release("v2.1.2", &["bitchord-setup-2.1.2-macos-aarch64.dmg"]);
+        assert_eq!(apk_offer(&r, "2.1.1"), None);
+    }
+
+    #[test]
+    fn the_release_a_phone_already_runs_is_not_offered() {
+        let r = release("v2.1.1", &["bitchord-2.1.1-android-arm64.apk"]);
+        assert_eq!(apk_offer(&r, "2.1.1"), None);
+        assert_eq!(apk_offer(&r, "2.2.0"), None);
     }
 
     #[test]

@@ -528,6 +528,8 @@ pub struct App {
     /// When the last automatic update check ran (app time, s).
     update_checked: Option<f64>,
     update_announced: bool,
+    /// Phone: the version whose update card was closed, until the app starts again.
+    update_dismissed: Option<String>,
     /// Release notes dialog (update ready, or "See all notes").
     notes_dialog: Option<notes::NotesDialog>,
     /// Version whose "Updated to" card is showing, on the first launch after an update.
@@ -762,6 +764,7 @@ impl App {
             jam_open: false,
             update_checked: None,
             update_announced: false,
+            update_dismissed: None,
             notes_dialog: None,
             // First launch of a newer version than last time: show what changed.
             // YTM_WHATS_NEW=1 shows the card for this version regardless.
@@ -1873,7 +1876,7 @@ pub fn shuffle<T>(v: &mut [T]) {
 /// can't change while running, and the check touches the disk, so it runs once.
 fn updatable() -> bool {
     static UPDATABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *UPDATABLE.get_or_init(|| crate::update::installed() || crate::update::portable_dir().is_some())
+    *UPDATABLE.get_or_init(|| cfg!(target_os = "android") || crate::update::installed() || crate::update::portable_dir().is_some())
 }
 
 pub fn fmt_time(secs: u32) -> String {
